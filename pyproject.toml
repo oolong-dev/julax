@@ -1,0 +1,18 @@
+[project]
+name = "julax"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "ipython>=9.4.0",
+    "jax>=0.6.2",
+    "plum-dispatch>=2.5.7",
+]
+
+[[tool.uv.index]]
+url = "https://pypi.apple.com/simple"
+default = true
+
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
