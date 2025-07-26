@@ -1,5 +1,10 @@
 # julax
 
+## 2025-07-25
+
+- Understand Jax Array and shard_map
+- [HighPerfLLMs2024](https://github.com/rwitten/HighPerfLLMs2024)
+
 ## 2025-07-24
 
 - [Introduction to Pathways on Cloud](https://cloud.google.com/ai-hypercomputer/docs/workloads/pathways-on-cloud/pathways-intro)
