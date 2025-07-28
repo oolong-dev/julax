@@ -1,5 +1,11 @@
 # julax
 
+## 2025-07-26
+
+- [Penzai+ Treescope: A Toolkit for Interpreting, Visualizing, and Editing Models As Data](https://github.com/google-deepmind/penzai)
+- [ml_dtypes](https://github.com/jax-ml/ml_dtypes)
+- [Controllable Video Generation: A Survey](https://arxiv.org/pdf/2507.16869)
+
 ## 2025-07-25
 
 - Understand Jax Array and shard_map
