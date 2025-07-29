@@ -55,7 +55,7 @@ jax.random.uniform(rng_a, shape=(2, 3))
 # pytree
 #####
 
-ps = {'n': 5, 'W': jnp.ones((2, 2)), 'b': jnp.zeros(2)}
+ps = {"n": 5, "W": jnp.ones((2, 2)), "b": jnp.zeros(2)}
 
 jax.tree.structure(ps)
 # PyTreeDef({'W': *, 'b': *, 'n': *})

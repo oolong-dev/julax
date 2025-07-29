@@ -1,5 +1,9 @@
 # julax
 
+## 2025-07-28
+
+- [optax](https://optax.readthedocs.io/en/latest/getting_started.html)
+
 ## 2025-07-26
 
 - [Penzai+ Treescope: A Toolkit for Interpreting, Visualizing, and Editing Models As Data](https://github.com/google-deepmind/penzai)
