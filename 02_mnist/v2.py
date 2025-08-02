@@ -4,6 +4,8 @@ import jax.numpy as jnp
 from jax import jit, grad
 from jax.nn.initializers import Initializer, truncated_normal
 
+import optax
+
 import tensorflow_datasets as tfds
 
 from jaxtyping import PRNGKeyArray, PyTree, Array, Num
@@ -86,11 +88,14 @@ model = Chain(
 rng = jax.random.key(0)
 params = model.params(rng)
 
+optimizer = optax.sgd(0.01)
+opt_state = optimizer.init(params)
+
 
 def loss_fn(params, model, x, y):
     logits = model(params, x)
-    ŷ = jax.nn.log_softmax(logits)
-    return -jnp.mean(ŷ * y)
+    losses = optax.softmax_cross_entropy_with_integer_labels(logits, y)
+    return jnp.mean(losses)
 
 
 def accuracy(params, model):
@@ -105,9 +110,12 @@ def accuracy(params, model):
 
 
 @partial(jit, static_argnames=["model"])
-def step(params, model, x, y):
+def step(params, model, opt_state, x, y):
     grads = grad(loss_fn)(params, model, x, y)
-    return jax.tree.map(lambda p, g: p - step_size * g, params, grads)
+    updates, opt_state = optimizer.update(grads, opt_state)
+    params = optax.apply_updates(params, updates)
+
+    return params, opt_state
 
 
 for i, batch in enumerate(train_ds):
@@ -115,4 +123,4 @@ for i, batch in enumerate(train_ds):
         acc = accuracy(params, model)
         print(f"Step {i}, Accuracy: {acc:.4f}")
     x, y = batch["image"], batch["label"]
-    params = step(params, model, jnp.reshape(x, (32, -1)), jax.nn.one_hot(y, 10))
+    params, opt_state = step(params, model, opt_state, jnp.reshape(x, (32, -1)), y)
