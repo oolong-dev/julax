@@ -65,3 +65,6 @@ jax.tree.leaves(ps)
 #         [1., 1.]], dtype=float32),
 #  Array([0., 0.], dtype=float32),
 #  5]
+
+jax.tree.map(lambda x, y: [x] + y, [5, 6], [[7, 9], [1, 2]])
+# [[5, 7, 9], [6, 1, 2]]

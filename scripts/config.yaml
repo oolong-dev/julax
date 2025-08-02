@@ -1,0 +1,6 @@
+m:
+  name: "abc"
+  init:
+    class_path: jax.nn.initializers.constant
+    init_args:
+      value: -7
