@@ -31,3 +31,27 @@ async def count(n):
 @dispatch
 async def count():
     await count(3)
+
+###
+
+
+class X:
+    @dispatch
+    def f(self, x: str) -> str:
+        raise NotImplementedError
+
+    @dispatch
+    def f(self, x: str, y: str) -> tuple[str, str]:
+        raise NotImplementedError
+
+    def g(self, x: str, y: str | None = None) -> tuple[str, str]:
+        if y is None:
+            return self.f(x), None
+        else:
+            return self.f(x, y)
+
+
+class Y(X):
+    @dispatch
+    def f(self, x: str) -> str:
+        return x.upper()
