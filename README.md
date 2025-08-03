@@ -1,5 +1,17 @@
 # julax
 
+## 2025-08-03
+
+- [penzai v2 background](https://penzai.readthedocs.io/en/stable/guides/v2_differences.html)
+    - > Parameters and state variables becoming mutable, shareable variable objects
+    - This seems to be aligned with current design. Currently a general `dict` is used. Maybe I should also introduce a dedicated class for params and states.
+    - > all variable objects must have a unique label, which can either be specified manually or generated automatically.
+    - Hmm, I find it difficult to search for a specific Param/State. MAYBE a unique label will do some help here?
+    - > Eager parameter initialization
+    - In current design, params & states are separated from models. So more close to lazy initialization?
+    - > The built-in Transformer implementation also supports loading Llama, Mistral, and GPT-NeoX / Pythia models.
+    - TODO: this is a good feature to have.
+
 ## 2025-07-28
 
 - [optax](https://optax.readthedocs.io/en/latest/getting_started.html)
