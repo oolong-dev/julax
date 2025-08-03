@@ -20,7 +20,7 @@ class ModelBase(BaseModel):
         raise NotImplementedError
 
     def states(self, rng: PRNGKeyArray) -> PyTree:
-        return None
+        return {"is_training": True}
 
     def init(self, rng: PRNGKeyArray) -> tuple[PyTree, PyTree]:
         rng_ps, rng_st = jax.random.split(rng)
@@ -31,6 +31,13 @@ class ModelBase(BaseModel):
 
     def __call__(self, ps: PyTree, x: PyTree, st: PyTree) -> tuple[PyTree, PyTree]:
         return self.forward(ps, x, st)
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs):
+        # TODO: respect `FieldInfo`
+        jax.tree_util.register_dataclass(
+            cls, data_fields=[], meta_fields=list(cls.model_fields.keys())
+        )
 
 
 class Dense(ModelBase):
@@ -126,7 +133,7 @@ def accuracy(model, params, states):
     return n_correct / n_total
 
 
-@partial(jit, static_argnames=["model"])
+@jit
 def step(model, params, states, opt_state, x, y):
     (loss, states), grads = value_and_grad(loss_fn, has_aux=True, argnums=1)(
         model, params, states, x, y

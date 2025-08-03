@@ -55,3 +55,11 @@ class Y(X):
     @dispatch
     def f(self, x: str) -> str:
         return x.upper()
+
+
+class M:
+    class O: ...
+
+
+class N(M):
+    class P(M.O): ...
