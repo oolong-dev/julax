@@ -20,7 +20,7 @@ class ModelBase(BaseModel):
         raise NotImplementedError
 
     def states(self, rng: PRNGKeyArray) -> PyTree:
-        return {"is_training": True}
+        return None
 
     def init(self, rng: PRNGKeyArray) -> tuple[PyTree, PyTree]:
         rng_ps, rng_st = jax.random.split(rng)
@@ -72,7 +72,8 @@ class Chain(ModelBase):
         return [layer.params(rng) for layer, rng in zip(self.layers, rngs)]
 
     def states(self, rng: PRNGKeyArray) -> list[PyTree]:
-        return [layer.states(rng) for layer in self.layers]
+        rngs = jax.random.split(rng, len(self.layers))
+        return [layer.states(rng) for layer, rng in zip(self.layers, rngs)]
 
     def forward(
         self, ps: list[PyTree], x: PyTree, st: tuple[PyTree, ...]
