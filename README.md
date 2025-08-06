@@ -1,5 +1,10 @@
 # julax
 
+## 2025-08-06
+
+- [ArcticTraining](https://arctictraining.readthedocs.io/en/latest/index.html)
+    - Looks like our config system is similar to this.
+
 ## 2025-08-03
 
 - [penzai v2 background](https://penzai.readthedocs.io/en/stable/guides/v2_differences.html)

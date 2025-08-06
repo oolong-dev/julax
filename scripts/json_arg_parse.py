@@ -16,6 +16,6 @@ args = parser.parse_args(
         "--m.name",
         "abc",
         "--m.init",
-        '{"class_path": "jax.nn.initializers.constant", "init_args": {"value": -7}}',
+        '{"class_path": "jax.nn.initializers.truncated_normal", "init_args": {"value": -7}}',
     ]
 )

@@ -619,13 +619,9 @@ wheels = [
 [[package]]
 name = "jsonargparse"
 version = "4.40.1"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/omni-us/jsonargparse#d11582e560c5244d3acf434292d606106b843cf9" }
 dependencies = [
     { name = "pyyaml" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ce/39/e6e0e68b5ca5eb1e679581d0d9010c2ff84c8b0caedc04865c98c4a6bd16/jsonargparse-4.40.1.tar.gz", hash = "sha256:a83f189b945341da6210a391f75f94ae796b4e5cd6dd21e0f1c5efb93f8056bc", size = 203320, upload-time = "2025-07-24T05:13:19.764Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6b/6f/1a29f913e14d41c91e56b1b2b2bd4647ebb641d3d5ef69412eb6e61829d4/jsonargparse-4.40.1-py3-none-any.whl", hash = "sha256:a7ae8eb9afbbb3e089657cb7ff6c271d8712f76af27d3542dc68a80a8c955c01", size = 224555, upload-time = "2025-07-24T05:13:17.81Z" },
 ]
 
 [[package]]
@@ -655,7 +651,7 @@ requires-dist = [
     { name = "ipython", specifier = ">=9.4.0" },
     { name = "jax", specifier = ">=0.6.2" },
     { name = "jaxtyping", specifier = ">=0.3.2" },
-    { name = "jsonargparse", specifier = ">=4.40.1" },
+    { name = "jsonargparse", git = "https://github.com/omni-us/jsonargparse" },
     { name = "penzai", specifier = ">=0.2.5" },
     { name = "plum-dispatch", specifier = ">=2.5.7" },
     { name = "pydantic", specifier = ">=2.11.7" },
