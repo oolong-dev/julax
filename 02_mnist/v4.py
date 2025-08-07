@@ -6,7 +6,7 @@ from jax.nn.initializers import Initializer, truncated_normal
 from jax._src import pjit
 
 from jaxlib._jax.pytree import SequenceKey
-from jaxlib._jax import ArrayImpl
+from jaxlib._jax import ArrayImpl, PjitFunction
 
 import optax
 
@@ -14,9 +14,9 @@ import tensorflow_datasets as tfds
 
 from jaxtyping import PRNGKeyArray, PyTree, Array, Num
 from pydantic import BaseModel, ConfigDict
-from typing import Callable, Literal
+from typing import Any, Callable, Iterable, Literal, NamedTuple
 
-from plum import Dispatcher, parametric
+from plum import Dispatcher
 
 dispatch = Dispatcher(warn_redefinition=True)
 
@@ -26,6 +26,11 @@ from rich.panel import Panel
 from rich.console import RenderableType, Console, Group
 
 console = Console()
+
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 #####
 # Visualization
@@ -177,8 +182,8 @@ class Dense(ModelBase):
         )
 
     def forward(
-        self, ps: DenseParam, x: Num[Array, "... d"], st: None
-    ) -> tuple[Num[Array, "... h"], None]:
+        self, ps: DenseParam, x: Num[Array, "... d"], st: ModelBase.StateBase
+    ) -> tuple[Num[Array, "... h"], ModelBase.StateBase]:
         h = jnp.einsum("...d,dh->...h", x, ps.w)
         o = h + ps.b
         if self.activation:
@@ -218,45 +223,94 @@ class Chain(ModelBase):
         return h, self.ChainState(layers=_st)
 
 
-step_size = 0.01
-batch_size = 32
-
-train_ds = (
-    tfds.load("mnist", split="train")
-    .repeat()
-    .shuffle(1024, seed=123)
-    .batch(batch_size, drop_remainder=True)
-    .take(1000)
-    .as_numpy_iterator()
-)
-test_ds = (
-    tfds.load("mnist", split="test").batch(batch_size, drop_remainder=True).take(1000)
-)
-
-model = Chain(
-    layers=(
-        Dense(in_dim=784, out_dim=512, activation=jax.nn.relu),
-        Dense(in_dim=512, out_dim=512, activation=jax.nn.relu),
-        Dense(in_dim=512, out_dim=10),
+class Trainer(BaseConfig):
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True, frozen=True, ignored_types=(PjitFunction,)
     )
-)
 
-rng = jax.random.key(0)
-params, states = model.init(rng)
+    model: ModelBase
+    optimizer: Any
+    loss_fn: Callable[[PyTree, PyTree], PyTree]
+    agg: Callable[[PyTree], PyTree] = jnp.mean
 
-optimizer = optax.sgd(0.01)
-opt_state = optimizer.init(params)
+    def init(
+        self, rng: PRNGKeyArray
+    ) -> tuple[ModelBase.ParamBase, ModelBase.StateBase, optax.OptState]:
+        ps, ps_st = self.model.init(rng)
+        opt_state = self.optimizer.init(ps)
+        return ps, ps_st, opt_state
+
+    def forward(
+        self, ps: ModelBase.ParamBase, ps_st: ModelBase.StateBase, x: PyTree, y: PyTree
+    ) -> tuple[PyTree, ModelBase.StateBase]:
+        ŷ, ps_st = self.model(ps, x, ps_st)
+        losses = self.loss_fn(ŷ, y)
+        l = self.agg(losses)
+        return l, ps_st
+
+    @partial(jit, static_argnums=0)
+    def step(
+        self,
+        ps: ModelBase.ParamBase,
+        ps_st: ModelBase.StateBase,
+        opt_st: optax.OptState,
+        x: PyTree,
+        y: PyTree,
+    ) -> tuple[PyTree, ModelBase.ParamBase, ModelBase.StateBase, optax.OptState]:
+        (loss, ps_st), grads = value_and_grad(self.forward, has_aux=True)(
+            ps, ps_st, x, y
+        )
+
+        updates, opt_st = self.optimizer.update(grads, opt_st)
+        ps = optax.apply_updates(ps, updates)
+        return loss, ps, ps_st, opt_st
 
 
-def loss_fn(model, params, states, x, y):
-    logits, states = model(params, x, states)
-    losses = optax.softmax_cross_entropy_with_integer_labels(logits, y)
-    return jnp.mean(losses), states
+def every_n_step(n: int) -> Callable[[int], bool]:
+    return lambda step: step % n == 0
 
 
-def accuracy(model, params, states):
+class Experiment(BaseConfig):
+    name: str
+
+    trainer: Trainer
+    trainer_dataset: Iterable
+
+    evaluator: Callable
+    evaluator_dataset: Any
+    evaluator_policy: Callable
+
+    checkpointer: None = None
+
+    seed: int = 0
+
+
+def run(t: Experiment):
+    logger.info(f"Running experiment: {t.name}")
+
+    # TODO: restore from checkpoint if exists
+    step, trainer_dataset = 0, t.trainer_dataset
+    params, states, opt_state = t.trainer.init(jax.random.key(t.seed))
+
+    for batch in trainer_dataset:
+        if t.evaluator_policy(step):
+            eval_res = t.evaluator(t.trainer.model, params, states, t.evaluator_dataset)
+            # TODO: wandb logging
+            logger.info(f"Step {step} eval res: {eval_res}")
+
+        x, y = batch["image"], batch["label"]
+        loss, params, states, opt_state = t.trainer.step(
+            params, states, opt_state, jnp.reshape(x, (32, -1)), y
+        )
+        step += 1
+        # TODO: wandb logging
+        # TODO: try saving checkpoints
+
+
+def accuracy(model, params, states, dataset):
     n_correct, n_total = 0, 0
-    for batch in test_ds.as_numpy_iterator():
+    for batch in dataset.as_numpy_iterator():
+        batch_size = batch["image"].shape[0]
         x = jnp.reshape(batch["image"], (batch_size, -1))
         y = batch["label"]
         logits, _ = model(params, x, states)
@@ -266,22 +320,30 @@ def accuracy(model, params, states):
     return n_correct / n_total
 
 
-@partial(jit, static_argnames=("model",))
-def step(model, params, states, opt_state, x, y):
-    (loss, states), grads = value_and_grad(loss_fn, has_aux=True, argnums=1)(
-        model, params, states, x, y
-    )
-    updates, opt_state = optimizer.update(grads, opt_state)
-    params = optax.apply_updates(params, updates)
+exp = Experiment(
+    name="mnist",
+    trainer=Trainer(
+        model=Chain(
+            layers=(
+                Dense(in_dim=784, out_dim=512, activation=jax.nn.relu),
+                Dense(in_dim=512, out_dim=512, activation=jax.nn.relu),
+                Dense(in_dim=512, out_dim=10),
+            )
+        ),
+        optimizer=optax.sgd(0.01),
+        loss_fn=optax.softmax_cross_entropy_with_integer_labels,
+    ),
+    trainer_dataset=tfds.load("mnist", split="train")
+    .repeat()
+    .shuffle(1024, seed=123)
+    .batch(32, drop_remainder=True)
+    .take(1000)
+    .as_numpy_iterator(),
+    evaluator=accuracy,
+    evaluator_dataset=tfds.load("mnist", split="test")
+    .batch(32, drop_remainder=True)
+    .take(1000),
+    evaluator_policy=every_n_step(100),
+)
 
-    return loss, params, states, opt_state
-
-
-for i, batch in enumerate(train_ds):
-    if i % 100 == 0:
-        acc = accuracy(model, params, states)
-        print(f"Step {i}, Accuracy: {acc:.4f}")
-    x, y = batch["image"], batch["label"]
-    loss, params, states, opt_state = step(
-        model, params, states, opt_state, jnp.reshape(x, (32, -1)), y
-    )
+run(exp)

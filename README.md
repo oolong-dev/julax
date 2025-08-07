@@ -1,5 +1,9 @@
 # julax
 
+## 2025-08-07
+
+- [chex](https://github.com/google-deepmind/chex)
+
 ## 2025-08-06
 
 - [ArcticTraining](https://arctictraining.readthedocs.io/en/latest/index.html)
