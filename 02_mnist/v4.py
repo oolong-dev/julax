@@ -113,7 +113,9 @@ def to_rich(path, x) -> RenderableType:
 
 
 class BaseConfig(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True, frozen=True, ignored_types=(jax.stages.Wrapped,)
+    )
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs):
@@ -250,9 +252,9 @@ class Trainer(ModelBase):
 
     class TrainerState(StateBase):
         learner_state: StateBase
-        step: Any = 0
+        step: int = 0
         opt_state: Any = None
-        loss: Array = field(default_factory=lambda: jnp.array(0.0))
+        loss: float = 0.0
 
     def state(self, rng: PRNGKeyArray) -> TrainerState:
         return self.TrainerState(learner_state=self.learner.state(rng))
@@ -266,18 +268,22 @@ class Trainer(ModelBase):
         return ps, st
 
     @partial(jit, static_argnums=0)
-    def __call__(
-        self, ps: ParamBase, x: PyTree, st: TrainerState
-    ) -> tuple[PyTree, TrainerState]:
-        opt_st = st.opt_state
-        (loss, learner_st), grads = value_and_grad(self.learner.forward, has_aux=True)(
-            ps, x, st.learner_state
+    def forward_and_backward(self, ps, x, ps_st, opt_st):
+        (loss, ps_st), grads = value_and_grad(self.learner.forward, has_aux=True)(
+            ps, x, ps_st
         )
         updates, opt_st = self.optimizer.update(grads, opt_st)
         ps = optax.apply_updates(ps, updates)
+        return loss, ps, ps_st, opt_st
 
+    def __call__(
+        self, ps: ParamBase, x: PyTree, st: TrainerState
+    ) -> tuple[PyTree, TrainerState]:
+        loss, ps, ps_st, opt_st = self.forward_and_backward(
+            ps, x, st.learner_state, st.opt_state
+        )
         return ps, self.TrainerState(
-            learner_state=learner_st,
+            learner_state=ps_st,
             step=st.step + 1,
             opt_state=opt_st,
             loss=loss,
@@ -291,12 +297,12 @@ class Experiment(BaseConfig):
     checkpointer: None = None
 
     trainer: Trainer
-    trainer_dataset: Iterable
+    dataset_factory: Callable
 
     observer: Callable
 
     def run(self):
-        trainer_dataset = self.trainer_dataset
+        trainer_dataset = self.dataset_factory()
         param, state = self.trainer.init(jax.random.key(self.seed))
         if self.checkpointer:
             trainer_dataset, param, state = self.checkpointer.load(
@@ -357,7 +363,7 @@ exp = Experiment(
         ),
         optimizer=optax.sgd(0.01),
     ),
-    trainer_dataset=(
+    dataset_factory=lambda: (
         tfds.load("mnist", split="train")
         .repeat()
         .shuffle(1024, seed=123)
