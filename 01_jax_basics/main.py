@@ -68,3 +68,5 @@ jax.tree.leaves(ps)
 
 jax.tree.map(lambda x, y: [x] + y, [5, 6], [[7, 9], [1, 2]])
 # [[5, 7, 9], [6, 1, 2]]
+
+jax.tree.reduce(+, [1, [-1, 2], 3])

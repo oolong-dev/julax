@@ -1,40 +1,39 @@
+from dataclasses import dataclass, field
+
 from functools import partial
 import jax
 import jax.numpy as jnp
 from jax import jit, value_and_grad
 from jax.nn.initializers import Initializer, truncated_normal
-from jax._src import pjit
-
-from jaxlib._jax.pytree import SequenceKey
-from jaxlib._jax import ArrayImpl, PjitFunction
 
 import optax
+from optax import OptState, GradientTransformation
 
 import tensorflow_datasets as tfds
+import tensorflow as tf
 
-from jaxtyping import PRNGKeyArray, PyTree, Array, Num
-from pydantic import BaseModel, ConfigDict
-from typing import Any, Callable, Iterable, Literal, NamedTuple
+from jaxtyping import PRNGKeyArray, PyTree, Array, Num, Float
+from typing import Any, Callable, Iterable, TypeAlias
 
 from plum import Dispatcher
 
+
 dispatch = Dispatcher(warn_redefinition=True)
-
-from rich.tree import Tree
-from rich.text import Text
-from rich.panel import Panel
-from rich.console import RenderableType, Console, Group
-
-console = Console()
 
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from pydantic import BaseModel, ConfigDict
+
 #####
 # Visualization
 #####
+
+from rich.tree import Tree
+from rich.panel import Panel
+from rich.console import RenderableType, Group
 
 
 @dispatch
@@ -48,7 +47,7 @@ def summary(x: int | float) -> str:
 
 
 @dispatch
-def summary(x: ArrayImpl) -> str:
+def summary(x: Array) -> str:
     min_val = jnp.min(x)
     max_val = jnp.max(x)
     median_val = jnp.median(x)
@@ -66,7 +65,7 @@ def typeof(x) -> str:
 
 
 @dispatch
-def typeof(x: ArrayImpl) -> str:
+def typeof(x: Array) -> str:
     return f"jax.Array{{{x.dtype} {x.shape}}}"
 
 
@@ -112,7 +111,13 @@ def to_rich(path, x) -> RenderableType:
 
 
 #####
+# Models
+#####
+
+
 class BaseConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs):
         # TODO: respect `FieldInfo`
@@ -124,28 +129,21 @@ class BaseConfig(BaseModel):
         return to_rich(self)
 
 
+class ParamBase(BaseConfig): ...
+
+
+class StateBase(BaseConfig): ...
+
+
+DEFAULT_STATE = StateBase()
+
+
 class ModelBase(BaseConfig):
-    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
-
-    class ParamBase(BaseConfig):
-        model_config = ConfigDict(arbitrary_types_allowed=True)
-
-        def length(self) -> int:
-            return sum(jnp.size(v) for v in jax.tree.leaves(self))
-
     def param(self, rng: PRNGKeyArray) -> ParamBase:
         raise NotImplementedError
 
-    class StateBase(BaseConfig):
-        model_config = ConfigDict(arbitrary_types_allowed=True)
-
-        def length(self) -> int:
-            return sum(
-                jnp.size(v) for v in jax.tree.leaves(self) if isinstance(v, Array)
-            )
-
     def state(self, rng: PRNGKeyArray) -> StateBase:
-        return self.StateBase()
+        return DEFAULT_STATE
 
     def init(self, rng: PRNGKeyArray) -> tuple[PyTree, PyTree]:
         rng_ps, rng_st = jax.random.split(rng)
@@ -158,9 +156,7 @@ class ModelBase(BaseConfig):
         return self.forward(ps, x, st)
 
 
-@dispatch
-def summary(x: ModelBase.StateBase) -> str:
-    return "EMPTY"
+#####
 
 
 class Dense(ModelBase):
@@ -170,7 +166,7 @@ class Dense(ModelBase):
     b_init: Initializer = truncated_normal()
     activation: None | Callable = None
 
-    class DenseParam(ModelBase.ParamBase):
+    class DenseParam(ParamBase):
         w: Num[Array, "d h"]
         b: Num[Array, "h"]
 
@@ -182,8 +178,8 @@ class Dense(ModelBase):
         )
 
     def forward(
-        self, ps: DenseParam, x: Num[Array, "... d"], st: ModelBase.StateBase
-    ) -> tuple[Num[Array, "... h"], ModelBase.StateBase]:
+        self, ps: DenseParam, x: Num[Array, "... d"], st: StateBase
+    ) -> tuple[Num[Array, "... h"], StateBase]:
         h = jnp.einsum("...d,dh->...h", x, ps.w)
         o = h + ps.b
         if self.activation:
@@ -192,21 +188,21 @@ class Dense(ModelBase):
 
 
 class Chain(ModelBase):
-    layers: tuple[ModelBase, ...]
+    layers: tuple[ModelBase, ...] = field(default_factory=tuple)
 
-    class ChainParam(ModelBase.ParamBase):
+    class ChainParam(ParamBase):
         layers: tuple[PyTree, ...]
 
-    def param(self, rng: PRNGKeyArray) -> PyTree:
+    def param(self, rng: PRNGKeyArray) -> ChainParam:
         rngs = jax.random.split(rng, len(self.layers))
         return self.ChainParam(
             layers=tuple(layer.param(rng) for layer, rng in zip(self.layers, rngs))
         )
 
-    class ChainState(ModelBase.StateBase):
-        layers: tuple[ModelBase.StateBase, ...]
+    class ChainState(StateBase):
+        layers: tuple[StateBase, ...]
 
-    def state(self, rng: PRNGKeyArray) -> ModelBase.StateBase:
+    def state(self, rng: PRNGKeyArray) -> ChainState:
         rngs = jax.random.split(rng, len(self.layers))
         return self.ChainState(
             layers=tuple(layer.state(rng) for layer, rng in zip(self.layers, rngs))
@@ -223,51 +219,76 @@ class Chain(ModelBase):
         return h, self.ChainState(layers=_st)
 
 
-class Trainer(BaseConfig):
-    model_config = ConfigDict(
-        arbitrary_types_allowed=True, frozen=True, ignored_types=(PjitFunction,)
-    )
-
+class Learner(ModelBase):
     model: ModelBase
-    optimizer: Any
-    loss_fn: Callable[[PyTree, PyTree], PyTree]
-    agg: Callable[[PyTree], PyTree] = jnp.mean
+    loss_fn: Callable
+    agg: Callable = jnp.mean
+    feature_name: str = "feature"
+    label_name: str = "label"
 
-    def init(
-        self, rng: PRNGKeyArray
-    ) -> tuple[ModelBase.ParamBase, ModelBase.StateBase, optax.OptState]:
-        ps, ps_st = self.model.init(rng)
-        opt_state = self.optimizer.init(ps)
-        return ps, ps_st, opt_state
+    def param(self, rng: PRNGKeyArray) -> ParamBase:
+        return self.model.param(rng)
+
+    def state(self, rng: PRNGKeyArray) -> StateBase:
+        return self.model.state(rng)
 
     def forward(
-        self, ps: ModelBase.ParamBase, ps_st: ModelBase.StateBase, x: PyTree, y: PyTree
-    ) -> tuple[PyTree, ModelBase.StateBase]:
-        ŷ, ps_st = self.model(ps, x, ps_st)
+        self, ps: ParamBase, input: PyTree, st: StateBase
+    ) -> tuple[PyTree, StateBase]:
+        x = input[self.feature_name]
+        y = input[self.label_name]
+        ŷ, st = self.model(ps, x, st)
         losses = self.loss_fn(ŷ, y)
         l = self.agg(losses)
-        return l, ps_st
+        return l, st
+
+
+class Trainer(ModelBase):
+
+    learner: Learner
+    optimizer: Any
+
+    def param(self, rng: PRNGKeyArray) -> ParamBase:
+        return self.learner.param(rng)
+
+    class TrainerState(StateBase):
+        learner_state: StateBase
+        step: Any = 0
+        opt_state: Any = None
+        loss: Array = field(default_factory=lambda: jnp.array(0.0))
+
+    def state(self, rng: PRNGKeyArray) -> TrainerState:
+        return self.TrainerState(learner_state=self.learner.state(rng))
+
+    def init(self, rng: PRNGKeyArray) -> tuple[ParamBase, TrainerState]:
+        rng_ps, rng_st = jax.random.split(rng)
+        ps = self.param(rng_ps)
+        st = self.TrainerState(
+            learner_state=self.learner.state(rng_st), opt_state=self.optimizer.init(ps)
+        )
+        return ps, st
 
     @partial(jit, static_argnums=0)
-    def step(
-        self,
-        ps: ModelBase.ParamBase,
-        ps_st: ModelBase.StateBase,
-        opt_st: optax.OptState,
-        x: PyTree,
-        y: PyTree,
-    ) -> tuple[PyTree, ModelBase.ParamBase, ModelBase.StateBase, optax.OptState]:
-        (loss, ps_st), grads = value_and_grad(self.forward, has_aux=True)(
-            ps, ps_st, x, y
+    def __call__(
+        self, ps: ParamBase, x: PyTree, st: TrainerState
+    ) -> tuple[PyTree, TrainerState]:
+        opt_st = st.opt_state
+        print(f"!!! {ps}")
+        print(f"!!! {opt_st}")
+        (loss, learner_st), grads = value_and_grad(self.learner.forward, has_aux=True)(
+            ps, x, st.learner_state
         )
-
+        print(f"!!! {grads}")
         updates, opt_st = self.optimizer.update(grads, opt_st)
+        print("???")
         ps = optax.apply_updates(ps, updates)
-        return loss, ps, ps_st, opt_st
 
-
-def every_n_step(n: int) -> Callable[[int], bool]:
-    return lambda step: step % n == 0
+        return ps, self.TrainerState(
+            learner_state=learner_st,
+            step=st.step + 1,
+            opt_state=opt_st,
+            loss=loss,
+        )
 
 
 class Experiment(BaseConfig):
@@ -276,74 +297,86 @@ class Experiment(BaseConfig):
     trainer: Trainer
     trainer_dataset: Iterable
 
-    evaluator: Callable
-    evaluator_dataset: Any
-    evaluator_policy: Callable
-
+    observer: Callable
     checkpointer: None = None
-
     seed: int = 0
 
+    def run(self):
+        trainer_dataset = self.trainer_dataset
+        param, state = self.trainer.init(jax.random.key(self.seed))
+        if self.checkpointer:
+            trainer_dataset, param, state = self.checkpointer.load(
+                trainer_dataset, param, state
+            )
 
-def run(t: Experiment):
-    logger.info(f"Running experiment: {t.name}")
+        self.observer(self.trainer, param, state)
 
-    # TODO: restore from checkpoint if exists
-    step, trainer_dataset = 0, t.trainer_dataset
-    params, states, opt_state = t.trainer.init(jax.random.key(t.seed))
+        for batch in trainer_dataset:
+            param, state = self.trainer(param, batch, state)
 
-    for batch in trainer_dataset:
-        if t.evaluator_policy(step):
-            eval_res = t.evaluator(t.trainer.model, params, states, t.evaluator_dataset)
-            # TODO: wandb logging
-            logger.info(f"Step {step} eval res: {eval_res}")
+            self.observer(self.trainer, param, state)
+            if self.checkpointer:
+                self.checkpointer.save(trainer_dataset, param, state)
 
-        x, y = batch["image"], batch["label"]
-        loss, params, states, opt_state = t.trainer.step(
-            params, states, opt_state, jnp.reshape(x, (32, -1)), y
+
+def evaluator(trainer: Trainer, params: PyTree, state: Trainer.TrainerState):
+    if state.step % 100 == 0:
+        dataset = (
+            tfds.load("mnist", split="test")
+            .batch(32, drop_remainder=True)
+            .map(
+                lambda x: {
+                    "feature": tf.reshape(x["image"], (32, -1)),
+                    "label": x["label"],
+                }
+            )
+            .take(1000)
+            .as_numpy_iterator()
         )
-        step += 1
-        # TODO: wandb logging
-        # TODO: try saving checkpoints
+        m = trainer.learner.model
+        st = state.learner_state  # TODO: convert to test mode
+        n_correct, n_total = 0, 0
+        for batch in dataset:
+            ŷ, _ = m(params, batch["feature"], st)
+            n_correct += (ŷ.argmax(axis=1) == batch["label"]).sum().item()
+            n_total += 32
+        acc = n_correct / n_total
 
-
-def accuracy(model, params, states, dataset):
-    n_correct, n_total = 0, 0
-    for batch in dataset.as_numpy_iterator():
-        batch_size = batch["image"].shape[0]
-        x = jnp.reshape(batch["image"], (batch_size, -1))
-        y = batch["label"]
-        logits, _ = model(params, x, states)
-        ŷ = jnp.argmax(logits, axis=1)
-        n_correct += (ŷ == y).sum().item()
-        n_total += batch_size
-    return n_correct / n_total
+        logging.info(f"Accuracy at step {state.step}: {acc}")
 
 
 exp = Experiment(
     name="mnist",
     trainer=Trainer(
-        model=Chain(
-            layers=(
-                Dense(in_dim=784, out_dim=512, activation=jax.nn.relu),
-                Dense(in_dim=512, out_dim=512, activation=jax.nn.relu),
-                Dense(in_dim=512, out_dim=10),
-            )
+        learner=Learner(
+            model=Chain(
+                layers=(
+                    Dense(in_dim=784, out_dim=512, activation=jax.nn.relu),
+                    Dense(in_dim=512, out_dim=512, activation=jax.nn.relu),
+                    Dense(in_dim=512, out_dim=10),
+                )
+            ),
+            loss_fn=optax.softmax_cross_entropy_with_integer_labels,
         ),
         optimizer=optax.sgd(0.01),
-        loss_fn=optax.softmax_cross_entropy_with_integer_labels,
     ),
-    trainer_dataset=tfds.load("mnist", split="train")
-    .repeat()
-    .shuffle(1024, seed=123)
-    .batch(32, drop_remainder=True)
-    .take(1000)
-    .as_numpy_iterator(),
-    evaluator=accuracy,
-    evaluator_dataset=tfds.load("mnist", split="test")
-    .batch(32, drop_remainder=True)
-    .take(1000),
-    evaluator_policy=every_n_step(100),
+    trainer_dataset=(
+        tfds.load("mnist", split="train")
+        .repeat()
+        .shuffle(1024, seed=123)
+        .batch(32, drop_remainder=True)
+        .map(
+            lambda x: {
+                "feature": tf.reshape(x["image"], (32, -1)),
+                "label": x["label"],
+            }
+        )
+        .take(1000)
+        .as_numpy_iterator()
+    ),
+    observer=evaluator,
 )
 
-run(exp)
+
+if __name__ == "__main__":
+    exp.run()
