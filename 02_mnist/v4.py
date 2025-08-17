@@ -1,5 +1,3 @@
-from dataclasses import dataclass, field
-
 from functools import partial
 import jax
 import jax.numpy as jnp
@@ -7,13 +5,12 @@ from jax import jit, value_and_grad
 from jax.nn.initializers import Initializer, truncated_normal
 
 import optax
-from optax import OptState, GradientTransformation
 
 import tensorflow_datasets as tfds
 import tensorflow as tf
 
-from jaxtyping import PRNGKeyArray, PyTree, Array, Num, Float
-from typing import Any, Callable, Iterable, TypeAlias
+from jaxtyping import PRNGKeyArray, PyTree, Array, Num
+from typing import Any, Callable, Iterable
 
 from plum import Dispatcher
 
@@ -188,7 +185,7 @@ class Dense(ModelBase):
 
 
 class Chain(ModelBase):
-    layers: tuple[ModelBase, ...] = field(default_factory=tuple)
+    layers: tuple[ModelBase, ...]
 
     class ChainParam(ParamBase):
         layers: tuple[PyTree, ...]
@@ -273,14 +270,10 @@ class Trainer(ModelBase):
         self, ps: ParamBase, x: PyTree, st: TrainerState
     ) -> tuple[PyTree, TrainerState]:
         opt_st = st.opt_state
-        print(f"!!! {ps}")
-        print(f"!!! {opt_st}")
         (loss, learner_st), grads = value_and_grad(self.learner.forward, has_aux=True)(
             ps, x, st.learner_state
         )
-        print(f"!!! {grads}")
         updates, opt_st = self.optimizer.update(grads, opt_st)
-        print("???")
         ps = optax.apply_updates(ps, updates)
 
         return ps, self.TrainerState(
@@ -294,12 +287,13 @@ class Trainer(ModelBase):
 class Experiment(BaseConfig):
     name: str
 
+    seed: int = 0
+    checkpointer: None = None
+
     trainer: Trainer
     trainer_dataset: Iterable
 
     observer: Callable
-    checkpointer: None = None
-    seed: int = 0
 
     def run(self):
         trainer_dataset = self.trainer_dataset
@@ -314,9 +308,12 @@ class Experiment(BaseConfig):
         for batch in trainer_dataset:
             param, state = self.trainer(param, batch, state)
 
-            self.observer(self.trainer, param, state)
             if self.checkpointer:
                 self.checkpointer.save(trainer_dataset, param, state)
+
+            self.observer(self.trainer, param, state)
+
+        return param, state
 
 
 def evaluator(trainer: Trainer, params: PyTree, state: Trainer.TrainerState):
@@ -378,5 +375,5 @@ exp = Experiment(
 )
 
 
-if __name__ == "__main__":
-    exp.run()
+# if __name__ == "__main__":
+#     exp.run()
