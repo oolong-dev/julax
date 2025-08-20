@@ -6,7 +6,13 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from jax import jit, value_and_grad
-from jax.nn.initializers import Initializer, variance_scaling, truncated_normal
+from jax.nn.initializers import (
+    Initializer,
+    variance_scaling,
+    truncated_normal,
+    ones,
+    zeros,
+)
 from jax.tree_util import PyTreeDef
 
 import optax
@@ -50,8 +56,7 @@ def tree_flatten_exactly_one_level(
     paths_and_subtrees, treedef = jax.tree_util.tree_flatten_with_path(
         tree, is_leaf=lambda subtree: subtree is not tree
     )
-    leaf_treedef = jax.tree_util.tree_structure(1)
-    if treedef == leaf_treedef:
+    if jax.tree_util.treedef_is_leaf(treedef):
         return None
 
     keys_and_subtrees = [(key, subtree) for ((key,), subtree) in paths_and_subtrees]
@@ -237,6 +242,16 @@ class Dropout(ModelBase):
         return o, self.DropoutState(rng=next_rng, is_training=st.is_training)
 
 
+@dispatch
+def test_mode(x):
+    return x
+
+
+@dispatch
+def test_mode(x: Dropout.DropoutState):
+    return Dropout.DropoutState(rng=x.rng, is_training=False)
+
+
 class Dense(ModelBase):
     in_dim: int
     out_dim: int
@@ -263,6 +278,31 @@ class Dense(ModelBase):
         if self.activation:
             o = self.activation(o)
         return o, st
+
+
+class LayerNorm(ModelBase):
+    dim: int
+    ϵ: float = 1e-5
+    w_init: Initializer = ones
+    b_init: Initializer = zeros
+
+    class LayerNormParam(ParamBase):
+        w: Array
+        b: Array
+
+    def param(self, rng: PRNGKeyArray) -> LayerNormParam:
+        w_rng, b_rng = jax.random.split(rng)
+        return self.LayerNormParam(
+            w=self.w_init(w_rng, (self.dim,)), b=self.b_init(b_rng, (self.dim,))
+        )
+
+    def forward(self, ps: LayerNormParam, x: Array, st: StateBase) -> Array:
+        x_mean = x.mean(axis=-1, keepdims=True)
+        x -= x_mean
+        var = (x * x).mean(axis=-1, keepdims=True)
+        x = x * jax.lax.rsqrt(var + self.ϵ)
+        # TODO: cast dtype
+        return x * ps.w + ps.b
 
 
 class Chain(ModelBase):

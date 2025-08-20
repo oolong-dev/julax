@@ -1,5 +1,9 @@
 # julax
 
+## 2025-08-20
+
+- [kvax](https://github.com/nebius/kvax)
+
 ## 2025-08-07
 
 - [chex](https://github.com/google-deepmind/chex)
