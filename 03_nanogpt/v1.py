@@ -21,7 +21,7 @@ import tensorflow_datasets as tfds
 import tensorflow as tf
 
 from jaxtyping import PRNGKeyArray, PyTree, Array, Num, Int
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 from plum import Dispatcher
 
@@ -195,6 +195,102 @@ class ModelBase(BaseConfig):
 #####
 
 
+class F(ModelBase):
+    f: Callable
+
+    def forward(
+        self, ps: ParamBase, x: PyTree, st: StateBase
+    ) -> tuple[PyTree, StateBase]:
+        return self.f(x), st
+
+
+@dispatch
+def to_model(x: Callable):
+    return F(f=x)
+
+
+@dispatch
+def to_model(x: ModelBase):
+    return x
+
+
+class Parallel(ModelBase):
+    layers: tuple[ModelBase, ...]
+    connection: Callable
+
+    def __init__(self, *layers, connection: Callable = tuple):
+        layers = tuple(to_model(l) for l in layers)
+        super().__init__(layers=layers, connection=connection)
+
+    class ParallelParam(ParamBase):
+        layers: tuple[ParamBase, ...]
+
+    def param(self, rng: PRNGKeyArray) -> ParallelParam:
+        rngs = jax.random.split(rng, len(self.layers))
+        return self.ParallelParam(
+            layers=tuple(l.param(r) for l, r in zip(self.layers, rngs))
+        )
+
+    class ParallelState(StateBase):
+        layers: tuple[StateBase, ...]
+
+    def state(self, rng: PRNGKeyArray) -> ParallelState:
+        rngs = jax.random.split(rng, len(self.layers))
+        return self.ParallelState(
+            layers=tuple(l.state(r) for l, r in zip(self.layers, rngs))
+        )
+
+    def forward(
+        self, ps: ParallelParam, xs: Sequence, st: ParallelState
+    ) -> tuple[PyTree, ParallelState]:
+        assert len(self.layers) == len(
+            xs
+        ), "Number of layers must match number of inputs"
+        O, S = (), ()
+        for l, p, x, s in zip(self.layers, ps.layers, xs, st.layers):
+            _o, _s = l(p, x, s)
+            O += (_o,)
+            S += (_s,)
+
+        return self.connection(*O), self.ParallelState(layers=S)
+
+
+class Chain(ModelBase):
+    layers: tuple[ModelBase, ...]
+
+    def __init__(self, *layers):
+        layers = tuple(to_model(x) for x in layers)
+        super().__init__(layers=layers)
+
+    class ChainParam(ParamBase):
+        layers: tuple[PyTree, ...]
+
+    def param(self, rng: PRNGKeyArray) -> ChainParam:
+        rngs = jax.random.split(rng, len(self.layers))
+        return self.ChainParam(
+            layers=tuple(layer.param(rng) for layer, rng in zip(self.layers, rngs))
+        )
+
+    class ChainState(StateBase):
+        layers: tuple[StateBase, ...]
+
+    def state(self, rng: PRNGKeyArray) -> ChainState:
+        rngs = jax.random.split(rng, len(self.layers))
+        return self.ChainState(
+            layers=tuple(layer.state(rng) for layer, rng in zip(self.layers, rngs))
+        )
+
+    def forward(
+        self, ps: ChainParam, x: PyTree, st: ChainState
+    ) -> tuple[PyTree, ChainState]:
+        h = x
+        S = ()
+        for l, p, s in zip(self.layers, ps.layers, st.layers):
+            h, _s = l(p, h, s)
+            S += (_s,)
+        return h, self.ChainState(layers=S)
+
+
 class Embedding(ModelBase):
     in_dim: int
     out_dim: int
@@ -303,38 +399,6 @@ class LayerNorm(ModelBase):
         x = x * jax.lax.rsqrt(var + self.ϵ)
         # TODO: cast dtype
         return x * ps.w + ps.b
-
-
-class Chain(ModelBase):
-    layers: tuple[ModelBase, ...]
-
-    class ChainParam(ParamBase):
-        layers: tuple[PyTree, ...]
-
-    def param(self, rng: PRNGKeyArray) -> ChainParam:
-        rngs = jax.random.split(rng, len(self.layers))
-        return self.ChainParam(
-            layers=tuple(layer.param(rng) for layer, rng in zip(self.layers, rngs))
-        )
-
-    class ChainState(StateBase):
-        layers: tuple[StateBase, ...]
-
-    def state(self, rng: PRNGKeyArray) -> ChainState:
-        rngs = jax.random.split(rng, len(self.layers))
-        return self.ChainState(
-            layers=tuple(layer.state(rng) for layer, rng in zip(self.layers, rngs))
-        )
-
-    def forward(
-        self, ps: ChainParam, x: PyTree, st: ChainState
-    ) -> tuple[PyTree, ChainState]:
-        h = x
-        _st = ()
-        for l, p, s in zip(self.layers, ps.layers, st.layers):
-            h, _s = l(p, h, s)
-            _st = (*_st, _s)
-        return h, self.ChainState(layers=_st)
 
 
 class Learner(ModelBase):

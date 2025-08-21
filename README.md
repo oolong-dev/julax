@@ -1,5 +1,12 @@
 # julax
 
+## 2025-08-21
+
+- [DiLoCo: Distributed Low-Communication Training of Language Models](https://arxiv.org/abs/2311.08105)
+- [Photon: Federated LLM Pre-Training](https://arxiv.org/abs/2411.02908)
+- [Convergence of Distributed Adaptive Optimization with Local Updates](https://arxiv.org/abs/2409.13155)
+- [DES-LOC: Desynced Low Communication Adaptive Optimizers for Training Foundation Models](https://arxiv.org/abs/2505.22549)
+
 ## 2025-08-20
 
 - [kvax](https://github.com/nebius/kvax)
