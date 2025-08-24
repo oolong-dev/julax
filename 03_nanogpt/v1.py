@@ -254,7 +254,6 @@ class Parallel(ModelBase):
 
         return self.connection(*O), self.ParallelState(layers=S)
 
-
 class Chain(ModelBase):
     layers: tuple[ModelBase, ...]
 
@@ -400,7 +399,6 @@ class LayerNorm(ModelBase):
         # TODO: cast dtype
         return x * ps.w + ps.b
 
-
 class Learner(ModelBase):
     model: ModelBase
     loss_fn: Callable
@@ -482,7 +480,7 @@ class Experiment(BaseConfig):
     trainer: Trainer
     dataset_factory: Callable
 
-    observer: Callable
+    observer: Callable[[Trainer, ParamBase, StateBase], None] = lambda t, p, s: None
 
     def run(self):
         trainer_dataset = self.dataset_factory()
@@ -534,10 +532,40 @@ n_head = 6
 n_embd = 384
 dropout = 0.2
 
+weight_decay = 1e-1
 learning_rate = 1e-3
 max_iters = 5000
 lr_decay_iters = 5000
 min_lr = 1e-4
+beta1 = 0.9
 beta2 = 0.99
 
 warmup_iters = 100
+
+
+def ovserver(): ...
+
+
+exp = Experiment(
+    name="nanoGPT",
+    trainer=Trainer(
+        learner="",
+        optimizer=optax.chain(
+            optax.clip_by_global_norm(1.0),
+            optax.adamw(
+                learning_rate=optax.schedules.warmup_cosine_decay_schedule(
+                    init_value=learning_rate / warmup_iters,
+                    peak_value=learning_rate,
+                    warmup_steps=warmup_iters,
+                    decay_steps=lr_decay_iters,
+                    end_value=min_lr,
+                ),
+                b1=beta1,
+                b2=beta2,
+                weight_decay=weight_decay,
+                mask=lambda p: jax.tree.map(lambda x: x.ndim != 1, p),
+            ),
+        ),
+    ),
+    dataset_factory=lambda: dataset(),
+)
