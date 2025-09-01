@@ -17,6 +17,7 @@ dependencies = [
     "pydantic>=2.11.7",
     "tensorflow>=2.19.0",
     "tensorflow-datasets>=4.9.9",
+    "torch>=2.8.0",
 ]
 
 [[tool.uv.index]]

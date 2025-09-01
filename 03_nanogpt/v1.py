@@ -5,7 +5,7 @@
 from functools import partial
 import jax
 import jax.numpy as jnp
-from jax import jit, value_and_grad
+from jax import jit, value_and_grad, Array
 from jax.nn.initializers import (
     Initializer,
     variance_scaling,
@@ -17,11 +17,10 @@ from jax.tree_util import PyTreeDef
 
 import optax
 
-import tensorflow_datasets as tfds
-import tensorflow as tf
+from typing import Any, Callable, Iterable, Mapping, Sequence, TypeAlias
 
-from jaxtyping import PRNGKeyArray, PyTree, Array, Num, Int
-from typing import Any, Callable, Iterable, Optional, Sequence
+PyTree: TypeAlias = Any
+PRNGKey: TypeAlias = Array
 
 from plum import Dispatcher
 
@@ -43,7 +42,7 @@ from pydantic import BaseModel, ConfigDict
 # https://github.com/google-deepmind/penzai/blob/aac7808a3d1269ea9885094d78d2274d56fc7449/penzai/core/tree_util.py#L37C1-L59C36
 def tree_flatten_exactly_one_level(
     tree: Any,
-) -> Optional[tuple[list[tuple[Any, Any]], PyTreeDef]]:
+) -> None | tuple[list[tuple[Any, Any]], PyTreeDef]:
     """Flattens a PyTree exactly one level, or returns None if it's not a PyTree.
 
     Args:
@@ -61,25 +60,6 @@ def tree_flatten_exactly_one_level(
 
     keys_and_subtrees = [(key, subtree) for ((key,), subtree) in paths_and_subtrees]
     return keys_and_subtrees, treedef
-
-
-def post_walk(x, f, *, with_path=False, root_path=()):
-    if flattened := tree_flatten_exactly_one_level(x):
-        keys_and_subtrees, treedef = flattened
-        vals = [
-            post_walk(subtree, f, with_path=with_path, root_path=(*root_path, key))
-            for key, subtree in keys_and_subtrees
-        ]
-        tree = jax.tree.unflatten(treedef, vals)
-        if with_path:
-            return f(root_path, tree)
-        else:
-            return f(tree)
-    else:
-        if with_path:
-            return f(root_path, x)
-        else:
-            return f(x)
 
 
 #####
@@ -162,33 +142,39 @@ class BaseConfig(BaseModel):
         return to_rich(self)
 
 
-class ParamBase(BaseConfig): ...
-
-
-NO_PARAM = ParamBase()
-
-
-class StateBase(BaseConfig): ...
-
-
-DEFAULT_STATE = StateBase()
+Param = None | Array | Iterable["Param"] | Mapping[Any, "Param"]
+State = Any
 
 
 class ModelBase(BaseConfig):
-    def param(self, rng: PRNGKeyArray) -> ParamBase:
-        return NO_PARAM
 
-    def state(self, rng: PRNGKeyArray) -> StateBase:
-        return DEFAULT_STATE
+    def param(self, rng: PRNGKey) -> Param:
+        children = {
+            f: getattr(self, f)
+            for f in self.model_fields_set
+            if isinstance(getattr(self, f), ModelBase)
+        }
+        rngs = jax.random.split(rng, len(children))
+        return {f: c.param(r) for (f, c), r in zip(children.items(), rngs)}
 
-    def init(self, rng: PRNGKeyArray) -> tuple[PyTree, PyTree]:
+    def state(self, rng: PRNGKey) -> State:
+        children = {
+            f: getattr(self, f)
+            for f in self.model_fields_set
+            if isinstance(getattr(self, f), ModelBase)
+        }
+
+        rngs = jax.random.split(rng, len(children))
+        return {f: c.state(r) for (f, c), r in zip(children.items(), rngs)}
+
+    def init(self, rng: PRNGKey) -> tuple[State, Param]:
         rng_ps, rng_st = jax.random.split(rng)
         return self.param(rng_ps), self.state(rng_st)
 
-    def forward(self, ps: PyTree, x: PyTree, st: PyTree) -> tuple[PyTree, PyTree]:
+    def forward(self, ps: Param, x: PyTree, st: State) -> tuple[PyTree, State]:
         raise NotImplementedError
 
-    def __call__(self, ps: PyTree, x: PyTree, st: PyTree) -> tuple[PyTree, PyTree]:
+    def __call__(self, ps: Param, x: PyTree, st: State) -> tuple[PyTree, State]:
         return self.forward(ps, x, st)
 
 
@@ -198,9 +184,7 @@ class ModelBase(BaseConfig):
 class F(ModelBase):
     f: Callable
 
-    def forward(
-        self, ps: ParamBase, x: PyTree, st: StateBase
-    ) -> tuple[PyTree, StateBase]:
+    def forward(self, ps: Param, x: PyTree, st: State) -> tuple[PyTree, State]:
         return self.f(x), st
 
 
@@ -214,45 +198,37 @@ def to_model(x: ModelBase):
     return x
 
 
+class Reshape(ModelBase):
+    shape: tuple[int, ...]
+
+    def __init__(self, *shape):
+        super().__init__(shape=shape)
+
+    def forward(self, ps: Param, x: PyTree, st: State) -> tuple[PyTree, State]:
+        return jnp.reshape(x, self.shape), st
+
+
 class Parallel(ModelBase):
-    layers: tuple[ModelBase, ...]
+    n: int
+    layer: ModelBase
     connection: Callable
 
-    def __init__(self, *layers, connection: Callable = tuple):
-        layers = tuple(to_model(l) for l in layers)
-        super().__init__(layers=layers, connection=connection)
+    def param(self, rng: PRNGKey) -> tuple:
+        return tuple(self.layer.param(rng) for rng in jax.random.split(rng, self.n))
 
-    class ParallelParam(ParamBase):
-        layers: tuple[ParamBase, ...]
+    def state(self, rng: PRNGKey) -> tuple:
+        return tuple(self.layer.state(rng) for rng in jax.random.split(rng, self.n))
 
-    def param(self, rng: PRNGKeyArray) -> ParallelParam:
-        rngs = jax.random.split(rng, len(self.layers))
-        return self.ParallelParam(
-            layers=tuple(l.param(r) for l, r in zip(self.layers, rngs))
-        )
-
-    class ParallelState(StateBase):
-        layers: tuple[StateBase, ...]
-
-    def state(self, rng: PRNGKeyArray) -> ParallelState:
-        rngs = jax.random.split(rng, len(self.layers))
-        return self.ParallelState(
-            layers=tuple(l.state(r) for l, r in zip(self.layers, rngs))
-        )
-
-    def forward(
-        self, ps: ParallelParam, xs: Sequence, st: ParallelState
-    ) -> tuple[PyTree, ParallelState]:
-        assert len(self.layers) == len(
-            xs
-        ), "Number of layers must match number of inputs"
+    def forward(self, ps: tuple, xs: Sequence, st: tuple) -> tuple[PyTree, tuple]:
+        assert self.n == len(xs), "Number of layers must match number of inputs"
         O, S = (), ()
-        for l, p, x, s in zip(self.layers, ps.layers, xs, st.layers):
-            _o, _s = l(p, x, s)
+        for p, x, s in zip(ps, xs, st):
+            _o, _s = self.layer(p, x, s)
             O += (_o,)
             S += (_s,)
 
-        return self.connection(*O), self.ParallelState(layers=S)
+        return self.connection(*O), S
+
 
 class Chain(ModelBase):
     layers: tuple[ModelBase, ...]
@@ -261,33 +237,21 @@ class Chain(ModelBase):
         layers = tuple(to_model(x) for x in layers)
         super().__init__(layers=layers)
 
-    class ChainParam(ParamBase):
-        layers: tuple[PyTree, ...]
-
-    def param(self, rng: PRNGKeyArray) -> ChainParam:
+    def param(self, rng: PRNGKey) -> tuple:
         rngs = jax.random.split(rng, len(self.layers))
-        return self.ChainParam(
-            layers=tuple(layer.param(rng) for layer, rng in zip(self.layers, rngs))
-        )
+        return tuple(layer.param(rng) for layer, rng in zip(self.layers, rngs))
 
-    class ChainState(StateBase):
-        layers: tuple[StateBase, ...]
-
-    def state(self, rng: PRNGKeyArray) -> ChainState:
+    def state(self, rng: PRNGKey) -> tuple:
         rngs = jax.random.split(rng, len(self.layers))
-        return self.ChainState(
-            layers=tuple(layer.state(rng) for layer, rng in zip(self.layers, rngs))
-        )
+        return tuple(layer.state(rng) for layer, rng in zip(self.layers, rngs))
 
-    def forward(
-        self, ps: ChainParam, x: PyTree, st: ChainState
-    ) -> tuple[PyTree, ChainState]:
+    def forward(self, ps: tuple, x: PyTree, st: tuple) -> tuple[PyTree, tuple]:
         h = x
         S = ()
-        for l, p, s in zip(self.layers, ps.layers, st.layers):
+        for l, p, s in zip(self.layers, ps, st):
             h, _s = l(p, h, s)
             S += (_s,)
-        return h, self.ChainState(layers=S)
+        return h, S
 
 
 class Embedding(ModelBase):
@@ -302,15 +266,13 @@ class Embedding(ModelBase):
         batch_axis=(),
     )
 
-    class EmbeddingParam(ParamBase):
-        w: Num[Array, "i o"]
+    class EmbeddingParam(BaseConfig):
+        w: Array
 
-    def param(self, rng: PRNGKeyArray) -> EmbeddingParam:
+    def param(self, rng: PRNGKey) -> EmbeddingParam:
         return self.EmbeddingParam(w=self.w_init(rng, (self.in_dim, self.out_dim)))
 
-    def forward(
-        self, ps: EmbeddingParam, x: Int[Array, "... i"], st: StateBase = DEFAULT_STATE
-    ) -> tuple[Num[Array, "... i o"], StateBase]:
+    def forward(self, ps: EmbeddingParam, x: Array, st: None) -> tuple[Array, None]:
         o = ps.w[x]
         return o, st
 
@@ -318,15 +280,15 @@ class Embedding(ModelBase):
 class Dropout(ModelBase):
     rate: float
 
-    class DropoutState(StateBase):
-        rng: PRNGKeyArray
+    class DropoutState(BaseConfig):
+        rng: PRNGKey
         is_training: bool = True
 
-    def state(self, rng: PRNGKeyArray) -> DropoutState:
+    def state(self, rng: PRNGKey) -> DropoutState:
         return self.DropoutState(rng=rng)
 
     def forward(
-        self, ps: ParamBase, x: Array, st: DropoutState
+        self, ps: None, x: Array, st: DropoutState
     ) -> tuple[Array, DropoutState]:
         rng, next_rng = jax.random.split(st.rng)
         if st.is_training and self.rate > 0:
@@ -337,39 +299,41 @@ class Dropout(ModelBase):
         return o, self.DropoutState(rng=next_rng, is_training=st.is_training)
 
 
-@dispatch
+# TODO: generalize
 def test_mode(x):
-    return x
+    return jax.tree.map(
+        lambda s: (
+            Dropout.DropoutState(rng=s.rng, is_training=False)
+            if isinstance(s, Dropout.DropoutState)
+            else s
+        ),
+        x,
+        is_leaf=lambda s: isinstance(s, Dropout.DropoutState),
+    )
 
 
-@dispatch
-def test_mode(x: Dropout.DropoutState):
-    return Dropout.DropoutState(rng=x.rng, is_training=False)
-
-
-class Dense(ModelBase):
+class Linear(ModelBase):
     in_dim: int
     out_dim: int
-    w_init: Initializer = truncated_normal()
-    b_init: Initializer = truncated_normal()
+    w_init: Initializer
+    b_init: None | Initializer = None
     activation: None | Callable = None
 
-    class DenseParam(ParamBase):
-        w: Num[Array, "d h"]
-        b: Num[Array, "h"]
+    class DenseParam(BaseConfig):
+        w: Array
+        b: None | Array
 
-    def param(self, rng: PRNGKeyArray) -> DenseParam:
+    def param(self, rng: PRNGKey) -> DenseParam:
         rng_w, rng_b = jax.random.split(rng)
         return self.DenseParam(
             w=self.w_init(rng_w, (self.in_dim, self.out_dim)),
-            b=self.b_init(rng_b, (self.out_dim,)),
+            b=self.b_init(rng_b, (self.out_dim,)) if self.b_init else None,
         )
 
-    def forward(
-        self, ps: DenseParam, x: Num[Array, "... d"], st: StateBase
-    ) -> tuple[Num[Array, "... h"], StateBase]:
-        h = jnp.einsum("...d,dh->...h", x, ps.w)
-        o = h + ps.b
+    def forward(self, ps: DenseParam, x: Array, st: None) -> tuple[Array, None]:
+        o = jnp.einsum("...d,dh->...h", x, ps.w)
+        if ps.b is not None:
+            o += ps.b
         if self.activation:
             o = self.activation(o)
         return o, st
@@ -381,23 +345,24 @@ class LayerNorm(ModelBase):
     w_init: Initializer = ones
     b_init: Initializer = zeros
 
-    class LayerNormParam(ParamBase):
+    class LayerNormParam(BaseConfig):
         w: Array
         b: Array
 
-    def param(self, rng: PRNGKeyArray) -> LayerNormParam:
+    def param(self, rng: PRNGKey) -> LayerNormParam:
         w_rng, b_rng = jax.random.split(rng)
         return self.LayerNormParam(
             w=self.w_init(w_rng, (self.dim,)), b=self.b_init(b_rng, (self.dim,))
         )
 
-    def forward(self, ps: LayerNormParam, x: Array, st: StateBase) -> Array:
+    def forward(self, ps: LayerNormParam, x: Array, st: None) -> tuple[Array, None]:
         x_mean = x.mean(axis=-1, keepdims=True)
         x -= x_mean
         var = (x * x).mean(axis=-1, keepdims=True)
         x = x * jax.lax.rsqrt(var + self.ϵ)
         # TODO: cast dtype
-        return x * ps.w + ps.b
+        return x * ps.w + ps.b, st
+
 
 class Learner(ModelBase):
     model: ModelBase
@@ -406,15 +371,7 @@ class Learner(ModelBase):
     feature_name: str = "feature"
     label_name: str = "label"
 
-    def param(self, rng: PRNGKeyArray) -> ParamBase:
-        return self.model.param(rng)
-
-    def state(self, rng: PRNGKeyArray) -> StateBase:
-        return self.model.state(rng)
-
-    def forward(
-        self, ps: ParamBase, input: PyTree, st: StateBase
-    ) -> tuple[PyTree, StateBase]:
+    def forward(self, ps: Param, input: PyTree, st: State) -> tuple[PyTree, State]:
         x = input[self.feature_name]
         y = input[self.label_name]
         ŷ, st = self.model(ps, x, st)
@@ -428,25 +385,22 @@ class Trainer(ModelBase):
     learner: Learner
     optimizer: Any
 
-    def param(self, rng: PRNGKeyArray) -> ParamBase:
-        return self.learner.param(rng)
-
     class TrainerState(StateBase):
-        learner_state: StateBase
+        learner_state: State
         step: int = 0
         opt_state: Any = None
         loss: float = 0.0
 
-    def state(self, rng: PRNGKeyArray) -> TrainerState:
+    def state(self, rng: PRNGKey) -> TrainerState:
         return self.TrainerState(learner_state=self.learner.state(rng))
 
-    def init(self, rng: PRNGKeyArray) -> tuple[ParamBase, TrainerState]:
+    def init(self, rng: PRNGKey) -> tuple[Param, TrainerState]:
         rng_ps, rng_st = jax.random.split(rng)
         ps = self.param(rng_ps)
         st = self.TrainerState(
             learner_state=self.learner.state(rng_st), opt_state=self.optimizer.init(ps)
         )
-        return ps, st
+        return {"learner": ps}, st
 
     @partial(jit, static_argnums=0)
     def forward_and_backward(self, ps, x, ps_st, opt_st):
@@ -458,7 +412,7 @@ class Trainer(ModelBase):
         return loss, ps, ps_st, opt_st
 
     def __call__(
-        self, ps: ParamBase, x: PyTree, st: TrainerState
+        self, ps: Param, x: PyTree, st: TrainerState
     ) -> tuple[PyTree, TrainerState]:
         loss, ps, ps_st, opt_st = self.forward_and_backward(
             ps, x, st.learner_state, st.opt_state
@@ -480,7 +434,7 @@ class Experiment(BaseConfig):
     trainer: Trainer
     dataset_factory: Callable
 
-    observer: Callable[[Trainer, ParamBase, StateBase], None] = lambda t, p, s: None
+    observer: Callable[[Trainer, Param, State], None] = lambda t, p, s: None
 
     def run(self):
         trainer_dataset = self.dataset_factory()
@@ -508,7 +462,6 @@ class Experiment(BaseConfig):
 #####
 
 import os
-import pickle
 import numpy as np
 
 
@@ -543,7 +496,25 @@ beta2 = 0.99
 warmup_iters = 100
 
 
-def ovserver(): ...
+def observer(): ...
+
+
+def create_attn_block(B, T, N, H):
+    D = N * H
+    return Chain(
+        Linear(in_dim=D, out_dim=3 * D, w_init=truncated_normal(stddev=0.02)),
+        lambda x: jnp.dsplit(x, 3),
+        Parallel(
+            n=3,
+            layer=Chain(Reshape(B, T, N, H), jnp.matrix_transpose),
+            connection=partial(jax.nn.dot_product_attention, is_causal=True),
+        ),
+        Dropout(rate=dropout),
+        jnp.matrix_transpose,
+        Reshape(B, T, D),
+        Linear(in_dim=D, out_dim=D, w_init=truncated_normal(stddev=0.02)),
+        Dropout(rate=dropout),
+    )
 
 
 exp = Experiment(
