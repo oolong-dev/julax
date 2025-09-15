@@ -1,5 +1,9 @@
 # julax
 
+## 2025-09-15
+
+- [How to jointly tune learning rate and weight decay for AdamW](https://fabian-sp.github.io/posts/2024/02/decoupling/)
+
 ## 2025-08-21
 
 - [DiLoCo: Distributed Low-Communication Training of Language Models](https://arxiv.org/abs/2311.08105)
