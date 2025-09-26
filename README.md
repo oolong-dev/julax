@@ -1,5 +1,14 @@
 # julax
 
+## 2025-09-26
+
+- Rethink [Why Flax NNX?](https://flax.readthedocs.io/en/latest/why.html)
+    - **Inspection**: doesn't work for us.
+    - **Running computation**: worth rethinking whether we should support it or not.
+    - **State handling**: doesn't work for us. The state is explicitly considered. A dedicated new class is created before `02_mnist/v5.py`. But it seems a dict like object is already enough.
+    - **Model surgery**: unclear about the real benefit here. The param & state sync might be an issue. But the operation should be easy since model/param/state are mirrored trees.
+    - **Transforms**: need revisit in the future.
+
 ## 2025-09-15
 
 - [How to jointly tune learning rate and weight decay for AdamW](https://fabian-sp.github.io/posts/2024/02/decoupling/)
