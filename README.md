@@ -8,6 +8,7 @@
     - **State handling**: doesn't work for us. The state is explicitly considered. A dedicated new class is created before `02_mnist/v5.py`. But it seems a dict like object is already enough.
     - **Model surgery**: unclear about the real benefit here. The param & state sync might be an issue. But the operation should be easy since model/param/state are mirrored trees.
     - **Transforms**: need revisit in the future.
+- It seems [Lux.jl](https://lux.csail.mit.edu/stable/) is mainly inspired by the [linen](https://flax-linen.readthedocs.io/en/latest) style in flax. While the NNX style is more close to pytorch. And existing implementation in this repo is more close to Lux and axlearn.
 
 ## 2025-09-15
 
