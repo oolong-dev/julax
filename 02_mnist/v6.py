@@ -7,10 +7,18 @@ from jax.tree_util import (
     register_pytree_with_keys_class,
     GetAttrKey,
 )
+from typing import Iterable
 from typing import Callable, TypeAlias, Any
 
 PRNGKey: TypeAlias = Array
 PyTree: TypeAlias = Any
+
+from jsonargparse import auto_cli, auto_parser
+
+# from jsonargparse._common import not_subclass_type_selectors
+
+# # not_subclass_type_selectors.pop("dataclass")
+# not_subclass_type_selectors.pop("pydantic")
 
 import optax
 
@@ -160,8 +168,8 @@ class Chain(LayerBase):
 
 
 class Learner(LayerBase):
-    model: LayerBase
     loss_fn: Callable
+    model: LayerBase
     agg: Callable = jnp.mean
     feature_name: str = "feature"
     label_name: str = "label"
@@ -190,38 +198,42 @@ class Trainer(LayerBase):
         layer_states["optimizer"] = self.optimizer.init(sublayer_params["learner"])
         return sublayer_params | layer_params, sublayer_states | layer_states
 
+    def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
+        loss, state = self.learner(x, p["learner"], s["learner"])
+        return loss, State(
+            learner=state, optimizer=s["optimizer"], step=s["step"] + 1, loss=loss
+        )
+
     @partial(jit, static_argnums=0)
     def forward_and_backward(self, x, p, s):
-        (loss, Sₗ), grads = value_and_grad(
-            self.learner.forward, argnums=1, has_aux=True
-        )(x, p["learner"], s["learner"])
-        updates, Sₒ = self.optimizer.update(grads, s["optimizer"])
-        Pₗ = optax.apply_updates(p["learner"], updates)
-        return loss, Pₗ, Sₗ, Sₒ
-
-    def __call__(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
-        loss, Pₗ, Sₗ, Sₒ = self.forward_and_backward(x, p, s)
-        return Param(learner=Pₗ), State(
-            learner=Sₗ, optimizer=Sₒ, step=s["step"] + 1, loss=loss
+        (loss, S), grads = value_and_grad(self.forward, argnums=1, has_aux=True)(
+            x, p, s
         )
+        updates, S["optimizer"] = self.optimizer.update(grads, S["optimizer"])
+        P = optax.apply_updates(p, updates)
+        return P, S
+
+    def __call__(self, x: PyTree, p: Param, s: State) -> tuple[Param, State]:
+        return self.forward_and_backward(x, p, s)
 
 
 class CheckpointManager:
-    def load(self) -> tuple[bool, tuple[Param, State] | None]:
-        return False, None
+
+    def load(self) -> tuple[Param, State] | tuple[None, None]:
+        return None, None
 
     def save(self, model: LayerBase, p: Param, s: State):
         pass
 
 
 class Experiment(LayerBase):
-    name: str
+    name: str = "mnist"
 
     seed: int = 0
     checkpoint_manager: CheckpointManager = CheckpointManager()
 
     trainer: Trainer
-    dataset_factory: Callable
+    dataset_factory: Callable[[], Iterable]
 
     observer: Callable
 
@@ -233,10 +245,8 @@ class Experiment(LayerBase):
         return Param(trainer=P), State(trainer=S, input=s["input"])
 
     def run(self):
-        is_success, param_and_state = self.checkpoint_manager.load()
-        if is_success:
-            p, s = param_and_state
-        else:
+        p, s = self.checkpoint_manager.load()
+        if (p, s) == (None, None):
             p, s = self.init(self.seed)
 
         self.observer(self, p, s)
@@ -277,7 +287,24 @@ def observer(x: Experiment, p: Param, s: State):
         logging.info(f"Accuracy at step {s['trainer']['step']}: {acc}")
 
 
-exp = Experiment(
+def dataset_factory():
+    return (
+        tfds.load("mnist", split="train")
+        .repeat()
+        .shuffle(1024, seed=123)
+        .batch(32, drop_remainder=True)
+        .map(
+            lambda x: {
+                "feature": tf.reshape(x["image"], (32, -1)),
+                "label": x["label"],
+            }
+        )
+        .take(1000)
+        .as_numpy_iterator()
+    )
+
+
+X = Experiment(
     name="mnist",
     trainer=Trainer(
         learner=Learner(
@@ -292,19 +319,25 @@ exp = Experiment(
         ),
         optimizer=optax.sgd(0.01),
     ),
-    dataset_factory=lambda: (
-        tfds.load("mnist", split="train")
-        .repeat()
-        .shuffle(1024, seed=123)
-        .batch(32, drop_remainder=True)
-        .map(
-            lambda x: {
-                "feature": tf.reshape(x["image"], (32, -1)),
-                "label": x["label"],
-            }
-        )
-        .take(1000)
-        .as_numpy_iterator()
-    ),
+    dataset_factory=dataset_factory,
     observer=observer,
 )
+
+def run(X: Experiment = X):
+    p, s = X.checkpoint_manager.load()
+    if (p, s) == (None, None):
+        p, s = X.init(X.seed)
+
+    X.observer(X, p, s)
+
+    for x in s["input"]:
+        p, s = X(x, p, s)
+
+        X.checkpoint_manager.save(X, p, s)
+        X.observer(X, p, s)
+
+    return p, s
+
+
+# if __name__ == "__main__":
+#     auto_cli(run)
