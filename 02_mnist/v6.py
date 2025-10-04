@@ -57,10 +57,8 @@ class LayerBase(BaseModel):
         )
 
     def sublayers(self) -> dict:
-        attrs = {f: getattr(self, f) for f in self.model_fields_set}
         attrs_flatten, treedef = jax.tree.flatten(
-            attrs,
-            is_leaf=lambda x: isinstance(x, LayerBase),
+            dict(self), is_leaf=lambda x: isinstance(x, LayerBase)
         )
         masked_sublayers = jax.tree.unflatten(
             treedef, [x if isinstance(x, LayerBase) else None for x in attrs_flatten]
