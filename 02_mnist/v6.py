@@ -1,38 +1,33 @@
-import jax
-import jax.numpy as jnp
-from jax import jit, value_and_grad, Array
-from jax.nn.initializers import Initializer, truncated_normal
-from jax.tree_util import (
-    register_dataclass,
-    register_pytree_with_keys_class,
-    GetAttrKey,
-)
-from typing import Iterable
-from typing import Callable, TypeAlias, Any
-
-PRNGKey: TypeAlias = Array
-PyTree: TypeAlias = Any
-
-from jsonargparse import auto_cli, auto_parser
-
-# from jsonargparse._common import not_subclass_type_selectors
-
-# # not_subclass_type_selectors.pop("dataclass")
-# not_subclass_type_selectors.pop("pydantic")
-
-import optax
-
-import tensorflow_datasets as tfds
-import tensorflow as tf
+import abc
+import os
 
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+import grain
+import jax
+import jax.numpy as jnp
+from jax import jit, value_and_grad, Array
+from jax.nn.initializers import Initializer, truncated_normal
+from typing import Callable, TypeAlias, Any
+
+PRNGKey: TypeAlias = Array
+PyTree: TypeAlias = Any
+
+import optax
+
+import tensorflow_datasets as tfds
+import tensorflow as tf
+
+
 from pydantic import BaseModel, ConfigDict
 
 from functools import partial
+
+from datetime import datetime
+
 
 import plum
 
@@ -41,8 +36,10 @@ dispatch = plum.Dispatcher(warn_redefinition=True)
 Param: TypeAlias = dict
 State: TypeAlias = dict
 
+import orbax.checkpoint as ocp
 
-class LayerBase(BaseModel):
+
+class LayerBase(BaseModel, abc.ABC):
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
         frozen=True,
@@ -82,7 +79,7 @@ class LayerBase(BaseModel):
         return State()
 
     @dispatch
-    def init(self, seed: int) -> tuple[Param, State]:
+    def init(self, seed: int = 0) -> tuple[Param, State]:
         return self.init(jax.random.key(seed))
 
     @dispatch
@@ -120,8 +117,9 @@ class LayerBase(BaseModel):
 
         return sublayer_params | layer_params, sublayer_states | layer_states
 
+    @abc.abstractmethod
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
-        raise NotImplementedError
+        ...
 
     def __call__(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         return self.forward(x, p, s)
@@ -217,42 +215,76 @@ class Trainer(LayerBase):
 
 class CheckpointManager:
 
-    def load(self) -> tuple[Param, State] | tuple[None, None]:
-        return None, None
+    def __init__(self, manager: ocp.CheckpointManager) -> None:
+        self._manager = manager
 
-    def save(self, model: LayerBase, p: Param, s: State):
-        pass
+    def save(self, p: Param, s: State):
+        self._manager.save(
+            s["trainer"]["step"],
+            args=ocp.args.Composite(
+                param=ocp.args.PyTreeSave(item=p),
+                state_trainer=ocp.args.PyTreeSave(item=s["trainer"]),
+                state_dataset_iter=grain.checkpoint.CheckpointSave(item=s["input"]),
+            ),
+        )
+
+    def load(self, p: Param, s: State) -> tuple[Param, State]:
+        try:
+            restored = self._manager.restore(
+                step=None,
+                args=ocp.args.Composite(
+                    param=ocp.args.PyTreeRestore(
+                        item=p,
+                        restore_args=ocp.checkpoint_utils.construct_restore_args(p),
+                    ),
+                    state_trainer=ocp.args.PyTreeRestore(
+                        item=s["trainer"],
+                        restore_args=ocp.checkpoint_utils.construct_restore_args(
+                            s["trainer"]
+                        ),
+                    ),
+                    state_dataset_iter=grain.checkpoint.CheckpointRestore(
+                        item=s["input"]
+                    ),
+                ),
+            )
+            param = restored["param"]
+            state_trainer = restored["state_trainer"]
+            state_dataset_iter = restored["state_dataset_iter"]
+            return param, State(input=state_dataset_iter, trainer=state_trainer)
+        except FileNotFoundError:
+            return p, s
 
 
 class Experiment(LayerBase):
     name: str = "mnist"
 
     seed: int = 0
-    checkpoint_manager: CheckpointManager = CheckpointManager()
+    checkpoint_manager: CheckpointManager = CheckpointManager(
+        ocp.CheckpointManager("./checkpoints")
+    )
 
     trainer: Trainer
-    dataset_factory: Callable[[], Iterable]
+    dataset: grain.IterDataset
 
     observer: Callable
 
     def state(self, rng: PRNGKey) -> State:
-        return State(input=self.dataset_factory())
+        return State(input=iter(self.dataset))
 
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         P, S = self.trainer(x, p["trainer"], s["trainer"])
         return Param(trainer=P), State(trainer=S, input=s["input"])
 
     def run(self):
-        p, s = self.checkpoint_manager.load()
-        if (p, s) == (None, None):
-            p, s = self.init(self.seed)
-
+        p, s = self.init(self.seed)
+        p, s = self.checkpoint_manager.load(p, s)
         self.observer(self, p, s)
 
         for x in s["input"]:
             p, s = self(x, p, s)
 
-            self.checkpoint_manager.save(self, p, s)
+            self.checkpoint_manager.save(p, s)
             self.observer(self, p, s)
 
         return p, s
@@ -261,49 +293,39 @@ class Experiment(LayerBase):
 def observer(x: Experiment, p: Param, s: State):
     if s["trainer"]["step"] % 100 == 0:
         dataset = (
-            tfds.load("mnist", split="test")
+            grain.MapDataset.source(tfds.data_source("mnist", split="test"))
             .batch(32, drop_remainder=True)
             .map(
                 lambda x: {
-                    "feature": tf.reshape(x["image"], (32, -1)),
+                    "feature": x["image"].reshape(32, -1),
                     "label": x["label"],
                 }
             )
-            .take(1000)
-            .as_numpy_iterator()
+            .to_iter_dataset()
         )
         model = x.trainer.learner.model
         param = p["trainer"]["learner"]["model"]
         state = s["trainer"]["learner"]["model"]  # TODO: convert to test mode
         n_correct, n_total = 0, 0
-        for batch in dataset:
+        for batch in iter(dataset):
             ŷ, _ = model(batch["feature"], param, state)
             n_correct += (ŷ.argmax(axis=1) == batch["label"]).sum().item()
             n_total += 32
         acc = n_correct / n_total
 
-        logging.info(f"Accuracy at step {s['trainer']['step']}: {acc}")
+        logger.info(f"Accuracy at step {s['trainer']['step']}: {acc}")
 
 
-def dataset_factory():
-    return (
-        tfds.load("mnist", split="train")
-        .repeat()
-        .shuffle(1024, seed=123)
-        .batch(32, drop_remainder=True)
-        .map(
-            lambda x: {
-                "feature": tf.reshape(x["image"], (32, -1)),
-                "label": x["label"],
-            }
-        )
-        .take(1000)
-        .as_numpy_iterator()
-    )
-
-
-X = Experiment(
+E = Experiment(
     name="mnist",
+    checkpoint_manager=CheckpointManager(
+        ocp.CheckpointManager(
+            directory=os.path.join(
+                os.getcwd(), "checkpoints", datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            ),
+            options=ocp.CheckpointManagerOptions(save_interval_steps=100),
+        )
+    ),
     trainer=Trainer(
         learner=Learner(
             model=Chain(
@@ -317,25 +339,17 @@ X = Experiment(
         ),
         optimizer=optax.sgd(0.01),
     ),
-    dataset_factory=dataset_factory,
+    dataset=grain.MapDataset.source(tfds.data_source("mnist", split="train"))
+    .seed(seed=45)
+    .shuffle()
+    .batch(32, drop_remainder=True)
+    .map(
+        lambda x: {
+            "feature": x["image"].reshape(32, -1),
+            "label": x["label"],
+        }
+    )
+    .slice(slice(1000))
+    .to_iter_dataset(),
     observer=observer,
 )
-
-def run(X: Experiment = X):
-    p, s = X.checkpoint_manager.load()
-    if (p, s) == (None, None):
-        p, s = X.init(X.seed)
-
-    X.observer(X, p, s)
-
-    for x in s["input"]:
-        p, s = X(x, p, s)
-
-        X.checkpoint_manager.save(X, p, s)
-        X.observer(X, p, s)
-
-    return p, s
-
-
-# if __name__ == "__main__":
-#     auto_cli(run)

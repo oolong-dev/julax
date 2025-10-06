@@ -1,127 +1,110 @@
-from pydantic import (
-    BaseModel,
-    Discriminator,
-    Field,
-    Tag,
-    TypeAdapter,
-    field_validator,
-    model_serializer,
-    model_validator,
-)
-
-from jsonargparse import auto_cli
-
-# from jsonargparse._common import not_subclass_type_selectors
+from jsonargparse._common import not_subclass_type_selectors
 
 # not_subclass_type_selectors.pop("dataclass")
-# not_subclass_type_selectors.pop("pydantic")
+not_subclass_type_selectors.pop("pydantic")
 
-from typing import Annotated, ClassVar, Literal, Union, TypeAlias
+from typing import Any, Callable
+from pydantic import BaseModel, SerializeAsAny, model_serializer, model_validator
 
-Model: TypeAlias
 
+# https://github.com/pydantic/pydantic/discussions/7008#discussioncomment-6826052
+class BM(BaseModel):
+    __subclasses_map__ = {}
 
-class ModelBase(BaseModel):
+    @model_serializer(mode="wrap")
+    def __serialize_with_class_type__(self, default_serializer) -> Any:
+        ret = default_serializer(self)
+        if isinstance(ret, dict):
+            ret["__klass__"] = (
+                f"{self.__class__.__module__}.{self.__class__.__qualname__}"
+            )
+        return ret
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def __convert_to_real_type__(cls, value: Any, handler):
+        if isinstance(value, dict) is False:
+            return handler(value)
+
+        # it is a dict so make sure to remove the __klass__
+        # because we don't allow extra keywords but want to ensure
+        # e.g Cat.model_validate(cat.model_dump()) works
+        class_full_name = value.pop("__klass__", None)
+
+        # if it's not the polymorphic base we construct via default handler
+        # if not cls.__is_polymorphic_base:
+        if not BM in cls.__bases__:
+            return handler(value)
+
+        # otherwise we lookup the correct polymorphic type and construct that
+        # instead
+        if class_full_name is None:
+            raise ValueError("Missing __klass__ field")
+
+        class_type = cls.__subclasses_map__.get(class_full_name, None)
+
+        if class_type is None:
+            # TODO could try dynamic import
+            raise TypeError(
+                "Trying to instantiate {class_full_name}, which has not yet been defined!"
+            )
+
+        return class_type.model_validate(value)
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs):
+        cls.__subclasses_map__[f"{cls.__module__}.{cls.__qualname__}"] = cls
+
     def model_dump(self, **kwargs) -> dict:
         return super().model_dump(serialize_as_any=True, **kwargs)
 
     def model_dump_json(self, **kwargs) -> str:
         return super().model_dump_json(serialize_as_any=True, **kwargs)
 
-    _subclasses: ClassVar[dict] = {}
 
-    @model_serializer(mode="wrap")
-    def inject_type_on_serialization(self, handler):
-        result = handler(self)
-        # if "kind" in result:
-        #     raise ValueError(f'Cannot use field "kind". It is reserved. {result}')
-        result["kind"] = f"{self.__class__.__name__}"
-        return result
-
-    @classmethod
-    def __pydantic_init_subclass__(cls, **kwargs):
-        ModelBase._subclasses[cls.__name__] = cls
-
-    @model_validator(mode="wrap")
-    @classmethod
-    def _parse_into_subclass(cls, value, handler):
-        print("!!!", cls, value)
-        if isinstance(value, dict) is False:
-            return handler(value)
-        if cls is not ModelBase:
-            return value
-        class_full_name = value.pop("kind", None)
-        if class_full_name is None:
-            raise ValueError("Missing `kind` field")
-        print("===", class_full_name)
-        class_type = cls._subclasses.get(class_full_name, None)
-        res = class_type.model_validate(value)
-        print("***", cls, class_type, res)
-        return res
+class Pet(BM):
+    name: str
 
 
-class ModelX(ModelBase):
-    name: str = "X"
+class Cat(Pet):
+    meows: int
 
 
-class ModelY(ModelBase):
-    name: str = "Y"
+class SpecialCat(Cat):
+    number_of_tails: int
 
 
-class Experiment(ModelBase):
-    model: ModelBase
+class Dog(Pet):
+    barks: float
+    friend: Pet
 
 
-# defined after Experiment
-class ModelZ(ModelBase):
-    name: str = "Z"
+class Person(Pet):
+    name: str
+
+    pets: list[Pet]
+    f: Callable = lambda: print("hi")
 
 
-exp = Experiment(model=ModelZ())
+exp = Person(
+    name="jt",
+    pets=[
+        SpecialCat(name="sc", number_of_tails=2, meows=3),
+        Dog(name="dog", barks=2, friend=Cat(name="cc", meows=2)),
+    ],
+)
 
 
-def run(x: Experiment = exp):
+def g():
+    print("Hey")
+
+
+def run(x: Person = exp):
     print(x)
+    print(x.f())
 
+
+from jsonargparse import auto_cli
 
 if __name__ == "__main__":
     auto_cli(run)
-
-# # parser = ArgumentParser()
-# # parser.add_argument("--m", type=Model)
-
-# # # cfg = parser.parse_path("config.yaml")
-
-# # args = parser.parse_args(
-# #     [
-# #         "--m.name",
-# #         "abc",
-# #         "--m.init",
-# #         '{"class_path": "jax.nn.initializers.truncated_normal", "init_args": {"lower": -1}}',
-# #     ]
-# # )
-
-# # if __name__ == "__main__":
-# #     print(auto_cli(Experiment, as_positional=False))
-
-# from dataclasses import dataclass
-
-
-# class Base(BaseModel):
-#     a: str = "a"
-
-
-# class B(Base):
-#     b: str = "b"
-
-
-# class X(Base):
-#     val: Base
-
-
-# def f(x: X = X(val=B())):
-#     print(x)
-
-
-# if __name__ == "__main__":
-#     auto_cli(f)

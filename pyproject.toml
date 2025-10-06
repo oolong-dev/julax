@@ -6,12 +6,14 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "black>=25.1.0",
+    "cloudpickle>=3.1.1",
     "flax>=0.10.7",
     "grain>=0.2.11",
     "ipython>=9.4.0",
     "jax>=0.6.2",
     "jaxtyping>=0.3.2",
     "jsonargparse>=4.41.0",
+    "opencv-python>=4.12.0.88",
     "penzai>=0.2.5",
     "plum-dispatch>=2.5.7",
     "pydantic>=2.11.7",

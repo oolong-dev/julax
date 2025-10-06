@@ -1,6 +1,22 @@
-m:
-  name: "abc"
-  init:
-    class_path: jax.nn.initializers.constant
-    init_args:
-      value: -7
+x:
+  class_path: __main__.Person
+  init_args:
+    name: tj
+    f: __main__.g
+    pets:
+    - class_path: __main__.Pet
+      init_args:
+        name: sc
+        meows: 3
+        number_of_tails: 2
+        __klass__: __main__.SpecialCat
+    - class_path: __main__.Pet
+      init_args:
+        name: dog
+        barks: 2.0
+        friend:
+          name: cc
+          meows: 2
+          __klass__: __main__.Cat
+        __klass__: __main__.Dog
+    __klass__: __main__.Person
