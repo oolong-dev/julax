@@ -1,0 +1,7 @@
+[project]
+name = "julax"
+version = "0.0.1"
+description = "JUst Layers over JAX"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
