@@ -1,167 +1,58 @@
-#####
-# Derived from ../02_mnist/v4.py
-#####
+import abc
+from copy import deepcopy
+import os
 
-from functools import partial
+import logging
+
+import numpy as np
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+import grain
 import jax
 import jax.numpy as jnp
 from jax import jit, value_and_grad, Array
 from jax.nn.initializers import (
     Initializer,
-    variance_scaling,
     truncated_normal,
+    variance_scaling,
     ones,
     zeros,
 )
-from jax.tree_util import PyTreeDef, register_pytree_with_keys_class, GetAttrKey
+from typing import Annotated, Callable, TypeAlias, Any
+
+PRNGKey: TypeAlias = Array
+PyTree: TypeAlias = Any
 
 import optax
 
-from typing import Any, Callable, Iterable, Mapping, Sequence, TypeAlias
-from typing_extensions import Annotated, TypeAliasType
-from pydantic.functional_validators import BeforeValidator
+import tensorflow_datasets as tfds
+import tensorflow as tf
 
 
-PyTree: TypeAlias = Any
-PRNGKey: TypeAlias = Array
+from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError
 
-from plum import Dispatcher
+from functools import partial
 
-
-dispatch = Dispatcher(warn_redefinition=True)
-
-import logging
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-from pydantic import BaseModel, ConfigDict, ValidationError, RootModel
-
-#####
-# common
-#####
+from datetime import datetime
 
 
-# https://github.com/google-deepmind/penzai/blob/aac7808a3d1269ea9885094d78d2274d56fc7449/penzai/core/tree_util.py#L37C1-L59C36
-def tree_flatten_exactly_one_level(
-    tree: Any,
-) -> None | tuple[list[tuple[Any, Any]], PyTreeDef]:
-    """Flattens a PyTree exactly one level, or returns None if it's not a PyTree.
+import plum
 
-    Args:
-      tree: Tree to flatten.
+dispatch = plum.Dispatcher(warn_redefinition=True)
 
-    Returns:
-      If ``tree`` has any children, returns a tuple ``(children, treedef)`` where
-      children is a list of ``(key, child)`` pairs. Otherwise, returns ``None``.
-    """
-    paths_and_subtrees, treedef = jax.tree_util.tree_flatten_with_path(
-        tree, is_leaf=lambda subtree: subtree is not tree
-    )
-    if jax.tree_util.treedef_is_leaf(treedef):
-        return None
+Param: TypeAlias = dict
+State: TypeAlias = dict
 
-    keys_and_subtrees = [(key, subtree) for ((key,), subtree) in paths_and_subtrees]
-    return keys_and_subtrees, treedef
+import orbax.checkpoint as ocp
 
 
-#####
-# Visualization
-#####
-
-from rich.tree import Tree
-from rich.panel import Panel
-from rich.console import RenderableType, Group
-
-
-@dispatch
-def summary(x) -> str:
-    return repr(x)
-
-
-@dispatch
-def summary(x: int | float) -> str:
-    return f"[bold cyan]{x}[/bold cyan]"
-
-
-@dispatch
-def summary(x: Array) -> str:
-    min_val = jnp.min(x)
-    max_val = jnp.max(x)
-    median_val = jnp.median(x)
-    mean = jnp.mean(x)
-    std = jnp.std(x)
-    non_zero_count = jnp.count_nonzero(x)
-    # number of elements
-    num_elements = jnp.size(x)
-    return f"≈{mean:5g} ±{std:5g} {median_val:5g} |≥{min_val:5g}, ≤{max_val:5g}| non_zero:{non_zero_count}/{num_elements}"
-
-
-@dispatch
-def typeof(x) -> str:
-    return x.__class__.__name__
-
-
-@dispatch
-def typeof(x: Array) -> str:
-    return f"jax.Array{{{x.dtype} {x.shape}}}"
-
-
-def to_rich(x, k="🎯") -> RenderableType:
-    t = typeof(x)
-    ts = f"italic color({hash(type(x)) % 256})"
-    label = f"[{ts} dim]<{t}>[/{ts} dim]"
-    ks = f"color({hash(k) % 256})"
-    label = f"[{ks} bold]{k}[/{ks} bold]: {label}"
-
-    if flattened := tree_flatten_exactly_one_level(x):
-        root = Tree(label, guide_style=f"dim {ks or ts}")
-        for k, v in flattened[0]:
-            root.add(to_rich(v, k))
-        return root
-    else:
-        label = f"{label} [bright_yellow]=>[/bright_yellow] {summary(x)}"
-        return Tree(label, guide_style=f"dim {ks or ts}")
-
-
-#####
-# Models
-#####
-
-
-class BaseRoot(RootModel[dict]):
-
-    def __init__(self, **kw):
-        super().__init__(root=OrderedDict(**kw))
-
-    def __getattr__(self, attr: str) -> Any:
-        if attr in self.root:
-            return self.root[attr]
-        else:
-            raise AttributeError
-
-    def tree_flatten_with_keys(self):
-        return tuple((GetAttrKey(k), self.root[k]) for k in self.root.keys()), None
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        return cls(*children)
-
-    def __rich__(self):
-        return to_rich(self)
-
-
-@register_pytree_with_keys_class
-class Param(BaseRoot): ...
-
-
-@register_pytree_with_keys_class
-class State(BaseRoot): ...
-
-
-class BaseConfig(BaseModel):
+class LayerBase(BaseModel, abc.ABC):
     model_config = ConfigDict(
-        arbitrary_types_allowed=True, frozen=True, ignored_types=(jax.stages.Wrapped,)
+        arbitrary_types_allowed=True,
+        frozen=True,
+        ignored_types=(jax.stages.Wrapped, plum.function.Function),
     )
 
     @classmethod
@@ -171,111 +62,176 @@ class BaseConfig(BaseModel):
             cls, data_fields=list(cls.model_fields.keys()), meta_fields=[]
         )
 
-    def __rich__(self):
-        return to_rich(self)
+    def sublayers(self) -> dict:
+        attrs_flatten, treedef = jax.tree.flatten(
+            dict(self), is_leaf=lambda x: isinstance(x, LayerBase)
+        )
+        masked_sublayers = jax.tree.unflatten(
+            treedef, [x if isinstance(x, LayerBase) else None for x in attrs_flatten]
+        )
 
-
-class ModelBase(BaseConfig):
+        res = {}
+        for k, v in masked_sublayers.items():
+            if jax.tree.reduce(
+                lambda x, y: x or y,
+                v,
+                None,
+                is_leaf=lambda x: isinstance(x, LayerBase),
+            ):
+                res[k] = v
+        return res
 
     def param(self, rng: PRNGKey) -> Param:
-        models = {f: getattr(self, f) for f in self.model_fields_set}
-        vals, treedef = jax.tree.flatten(
-            models, is_leaf=lambda x: isinstance(x, ModelBase)
-        )
-        rngs = jax.random.split(rng, len(vals))
-        flatten_params = [
-            v.param(rng) if isinstance(v, ModelBase) else None
-            for v, rng in zip(vals, rngs)
-        ]
-        params = jax.tree.unflatten(treedef, flatten_params)
-        return Param({k: v for k, v in params.items() if v is not None})
+        return Param()
 
     def state(self, rng: PRNGKey) -> State:
-        models = {f: getattr(self, f) for f in self.model_fields_set}
-        vals, treedef = jax.tree.flatten(
-            models, is_leaf=lambda x: isinstance(x, ModelBase)
-        )
-        rngs = jax.random.split(rng, len(vals))
-        flatten_states = [
-            v.param(rng) if isinstance(v, ModelBase) else None
-            for v, rng in zip(vals, rngs)
-        ]
-        states = jax.tree.unflatten(treedef, flatten_states)
-        return State({k: v for k, v in states.items() if v is not None})
+        return State()
 
+    @dispatch
+    def init(self, seed: int = 0) -> tuple[Param, State]:
+        return self.init(jax.random.key(seed))
+
+    @dispatch
     def init(self, rng: PRNGKey) -> tuple[Param, State]:
-        rng_ps, rng_st = jax.random.split(rng)
-        return self.param(rng_ps), self.state(rng_st)
+        sublayers, treedef = jax.tree.flatten(
+            self.sublayers(), is_leaf=lambda x: isinstance(x, LayerBase)
+        )
 
-    def forward(self, ps: Param, x: PyTree, st: State) -> tuple[PyTree, State]:
-        raise NotImplementedError
+        sublayer_params_flatten, sublayer_stats_flatten = [], []
 
-    def __call__(self, ps: Param, x: PyTree, st: State) -> tuple[PyTree, State]:
-        return self.forward(ps, x, st)
+        for l in sublayers:
+            if l is None:
+                sublayer_params_flatten.append(None)
+                sublayer_stats_flatten.append(None)
+            else:
+                rng, _rng = jax.random.split(rng)
+                p, s = l.init(_rng)
+                sublayer_params_flatten.append(p)
+                sublayer_stats_flatten.append(s)
+
+        sublayer_params = Param(**jax.tree.unflatten(treedef, sublayer_params_flatten))
+        sublayer_states = State(**jax.tree.unflatten(treedef, sublayer_stats_flatten))
+
+        rng_p, rng_s = jax.random.split(rng)
+        layer_params = self.param(rng_p)
+        layer_states = self.state(rng_s)
+        return self.init(layer_params, layer_states, sublayer_params, sublayer_states)
+
+    @dispatch
+    def init(
+        self, layer_params, layer_states, sublayer_params, sublayer_states
+    ) -> tuple[Param, State]:
+        assert len(layer_params.keys() & sublayer_params.keys()) == 0
+        assert len(layer_states.keys() & sublayer_states.keys()) == 0
+
+        return sublayer_params | layer_params, sublayer_states | layer_states
+
+    @abc.abstractmethod
+    def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]: ...
+
+    def __call__(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
+        return self.forward(x, p, s)
+
+
+#####
+# layers
+#####
+
+
+class Linear(LayerBase):
+    in_dim: int
+    out_dim: int
+    w_init: Initializer
+    b_init: None | Initializer = None
+
+    def param(self, rng: PRNGKey) -> Param:
+        rng_w, rng_b = jax.random.split(rng)
+        return Param(
+            w=self.w_init(rng_w, (self.in_dim, self.out_dim)),
+            b=self.b_init(rng_b, (self.out_dim,)) if self.b_init else None,
+        )
+
+    def forward(self, x: Array, p: Param, st: State) -> tuple[Array, State]:
+        o = jnp.einsum("...d,dh->...h", x, p["w"])
+        if "b" in p:
+            o += p["b"]
+        return o, st
 
 
 @dispatch(precedence=1)
-def to_model(x: ModelBase):
+def to_layer(x: LayerBase):
     return x
 
 
 @dispatch
-def to_model(x):
-    raise ValidationError(f"Failed to convert to ModelBase: {x}")
+def to_layer(x):
+    raise ValidationError(f"Failed to convert to LayerBase: {x}")
+
+
+LayerLike = Annotated[LayerBase, BeforeValidator(to_layer)]
+
+
+class Chain(LayerBase):
+    layers: tuple[LayerLike, ...]
+
+    def __init__(self, *args):
+        super().__init__(layers=args)
+
+    def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
+        h = x
+        S = ()
+        for l, p, s in zip(self.layers, p["layers"], s["layers"]):
+            h, sᵢ = l(h, p, s)
+            S += (sᵢ,)
+        return h, State(layers=S)
+
+
+class F(LayerBase):
+    f: Callable
+
+    def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
+        return self.f(x), s
 
 
 @dispatch
-def to_model(x: Callable):
+def to_layer(x: Callable):
     return F(f=x)
 
 
-Model = Annotated[ModelBase, BeforeValidator(to_model)]
+class Dropout(LayerBase):
+    rate: float
+
+    def state(self, rng: PRNGKey) -> State:
+        return State(rng=rng, is_training=True)
+
+    def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
+        rng, _rng = jax.random.split(s["rng"])
+        if s["is_training"] and self.rate > 0:
+            mask = jax.random.bernoulli(rng, self.rate, x.shape)
+            o = jnp.where(mask, 0, x) / (1 - self.rate)
+        else:
+            o = x
+        return o, State(rng=_rng, is_training=s["is_training"])
 
 
-#####
+def update_mode(s: State, key: str, val):
+    return jax.tree.map_with_path(
+        lambda path, x: (
+            val if jax.tree_util.keystr([path[-1]], simple=True) == key else True
+        ),
+        s,
+    )
 
 
-class F(ModelBase):
-    f: Any
-
-    def forward(self, ps: Param, x: PyTree, st: State) -> tuple[PyTree, State]:
-        return self.f(x), st
+def train_mode(s: State):
+    return update_mode(s, "is_training", True)
 
 
-class Reshape(ModelBase):
-    shape: tuple[int, ...]
-
-    def __init__(self, *shape):
-        super().__init__(shape=shape)
-
-    def forward(self, ps: Param, x: PyTree, st: State) -> tuple[PyTree, State]:
-        return jnp.reshape(x, self.shape), st
+def test_mode(s: State):
+    return update_mode(s, "is_training", False)
 
 
-from collections import OrderedDict
-
-
-class Chain(ModelBase):
-    names: tuple[str, ...]
-    layers: tuple[Model, ...]
-
-    def __init__(self, *layers, **named_layers):
-        names = tuple(f"layer_{i+1}" for i in range(len(layers))) + tuple(
-            named_layers.keys()
-        )
-        layers = tuple(layers) + tuple(named_layers.values())
-        super().__init__(names=names, layers=layers)
-
-    def forward(self, ps: Param, x: PyTree, st: State) -> tuple[PyTree, State]:
-        h = x
-        S = ()
-        for l, p, s in zip(self.layers, ps, st):
-            h, sᵢ = l(p, h, s)
-            S += (sᵢ,)
-        return h, S
-
-
-class Embedding(ModelBase):
+class Embedding(LayerBase):
     in_dim: int
     out_dim: int
     w_init: Initializer = variance_scaling(
@@ -287,218 +243,198 @@ class Embedding(ModelBase):
         batch_axis=(),
     )
 
-    class EmbeddingParam(BaseConfig):
-        w: Array
+    def param(self, rng: PRNGKey) -> Param:
+        return Param(w=self.w_init(rng, (self.in_dim, self.out_dim)))
 
-    def param(self, rng: PRNGKey) -> EmbeddingParam:
-        return self.EmbeddingParam(w=self.w_init(rng, (self.in_dim, self.out_dim)))
-
-    def forward(self, ps: EmbeddingParam, x: Array, st: None) -> tuple[Array, None]:
-        o = ps.w[x]
-        return o, st
+    def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
+        return p["w"][x], s
 
 
-# class Dropout(ModelBase):
-#     rate: float
+class LayerNorm(LayerBase):
+    dim: int
+    ϵ: float = 1e-5
+    w_init: Initializer = ones
+    b_init: Initializer = zeros
 
-#     class DropoutState(BaseConfig):
-#         rng: PRNGKey
-#         is_training: bool = True
+    def param(self, rng: PRNGKey) -> Param:
+        w_rng, b_rng = jax.random.split(rng)
+        return Param(
+            w=self.w_init(w_rng, (self.dim,)), b=self.b_init(b_rng, (self.dim,))
+        )
 
-#     def state(self, rng: PRNGKey) -> DropoutState:
-#         return self.DropoutState(rng=rng)
-
-#     def forward(
-#         self, ps: None, x: Array, st: DropoutState
-#     ) -> tuple[Array, DropoutState]:
-#         rng, next_rng = jax.random.split(st.rng)
-#         if st.is_training and self.rate > 0:
-#             mask = jax.random.bernoulli(rng, self.rate, x.shape)
-#             o = jnp.where(mask, 0, x) / (1 - self.rate)
-#         else:
-#             o = x
-#         return o, self.DropoutState(rng=next_rng, is_training=st.is_training)
-
-
-# # TODO: generalize
-# def test_mode(x):
-#     return jax.tree.map(
-#         lambda s: (
-#             Dropout.DropoutState(rng=s.rng, is_training=False)
-#             if isinstance(s, Dropout.DropoutState)
-#             else s
-#         ),
-#         x,
-#         is_leaf=lambda s: isinstance(s, Dropout.DropoutState),
-#     )
+    def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
+        x_mean = x.mean(axis=-1, keepdims=True)
+        x -= x_mean
+        var = (x * x).mean(axis=-1, keepdims=True)
+        x = x * jax.lax.rsqrt(var + self.ϵ)
+        # TODO: cast dtype
+        return x * p["w"] + p["b"], s
 
 
-# class Linear(ModelBase):
-#     in_dim: int
-#     out_dim: int
-#     w_init: Initializer
-#     b_init: None | Initializer = None
-#     activation: None | Callable = None
+class Learner(LayerBase):
+    loss_fn: Callable
+    model: LayerBase
+    agg: Callable = jnp.mean
+    feature_name: str = "feature"
+    label_name: str = "label"
 
-#     class DenseParam(BaseConfig):
-#         w: Array
-#         b: None | Array
-
-#     def param(self, rng: PRNGKey) -> DenseParam:
-#         rng_w, rng_b = jax.random.split(rng)
-#         return self.DenseParam(
-#             w=self.w_init(rng_w, (self.in_dim, self.out_dim)),
-#             b=self.b_init(rng_b, (self.out_dim,)) if self.b_init else None,
-#         )
-
-#     def forward(self, ps: DenseParam, x: Array, st: None) -> tuple[Array, None]:
-#         o = jnp.einsum("...d,dh->...h", x, ps.w)
-#         if ps.b is not None:
-#             o += ps.b
-#         if self.activation:
-#             o = self.activation(o)
-#         return o, st
+    def forward(self, input: dict, p: Param, s: State) -> tuple[PyTree, State]:
+        x = input[self.feature_name]
+        y = input[self.label_name]
+        ŷ, S = self.model(x, p["model"], s["model"])
+        losses = self.loss_fn(ŷ, y)
+        l = self.agg(losses)
+        return l, State(model=S)
 
 
-# class LayerNorm(ModelBase):
-#     dim: int
-#     ϵ: float = 1e-5
-#     w_init: Initializer = ones
-#     b_init: Initializer = zeros
+class Trainer(LayerBase):
 
-#     class LayerNormParam(BaseConfig):
-#         w: Array
-#         b: Array
+    learner: Learner
+    optimizer: Any
 
-#     def param(self, rng: PRNGKey) -> LayerNormParam:
-#         w_rng, b_rng = jax.random.split(rng)
-#         return self.LayerNormParam(
-#             w=self.w_init(w_rng, (self.dim,)), b=self.b_init(b_rng, (self.dim,))
-#         )
+    def state(self, rng: PRNGKey) -> State:
+        return State(optimizer=None, step=0, loss=0.0)
 
-#     def forward(self, ps: LayerNormParam, x: Array, st: None) -> tuple[Array, None]:
-#         x_mean = x.mean(axis=-1, keepdims=True)
-#         x -= x_mean
-#         var = (x * x).mean(axis=-1, keepdims=True)
-#         x = x * jax.lax.rsqrt(var + self.ϵ)
-#         # TODO: cast dtype
-#         return x * ps.w + ps.b, st
+    @dispatch
+    def init(
+        self, layer_params, layer_states, sublayer_params, sublayer_states
+    ) -> tuple[Param, State]:
+        layer_states["optimizer"] = self.optimizer.init(sublayer_params["learner"])
+        return sublayer_params | layer_params, sublayer_states | layer_states
 
+    def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
+        loss, state = self.learner(x, p["learner"], s["learner"])
+        return loss, State(
+            learner=state, optimizer=s["optimizer"], step=s["step"] + 1, loss=loss
+        )
 
-# class Learner(ModelBase):
-#     model: ModelBase
-#     loss_fn: Callable
-#     agg: Callable = jnp.mean
-#     feature_name: str = "feature"
-#     label_name: str = "label"
+    @partial(jit, static_argnums=0)
+    def forward_and_backward(self, x, p, s):
+        (loss, S), grads = value_and_grad(self.forward, argnums=1, has_aux=True)(
+            x, p, s
+        )
+        updates, S["optimizer"] = self.optimizer.update(grads, S["optimizer"])
+        P = optax.apply_updates(p, updates)
+        return P, S
 
-#     def forward(self, ps: Param, input: PyTree, st: State) -> tuple[PyTree, State]:
-#         x = input[self.feature_name]
-#         y = input[self.label_name]
-#         ŷ, st = self.model(ps, x, st)
-#         losses = self.loss_fn(ŷ, y)
-#         l = self.agg(losses)
-#         return l, st
+    def __call__(self, x: PyTree, p: Param, s: State) -> tuple[Param, State]:
+        return self.forward_and_backward(x, p, s)
 
 
-# class Trainer(ModelBase):
+class CheckpointManager:
 
-#     learner: Learner
-#     optimizer: Any
+    def __init__(self, manager: ocp.CheckpointManager) -> None:
+        self._manager = manager
 
-#     class TrainerState(StateBase):
-#         learner_state: State
-#         step: int = 0
-#         opt_state: Any = None
-#         loss: float = 0.0
+    def save(self, p: Param, s: State):
+        self._manager.save(
+            s["trainer"]["step"],
+            args=ocp.args.Composite(
+                param=ocp.args.PyTreeSave(item=p),
+                state_trainer=ocp.args.PyTreeSave(item=s["trainer"]),
+                state_dataset_iter=grain.checkpoint.CheckpointSave(item=s["input"]),
+            ),
+        )
 
-#     def state(self, rng: PRNGKey) -> TrainerState:
-#         return self.TrainerState(learner_state=self.learner.state(rng))
-
-#     def init(self, rng: PRNGKey) -> tuple[Param, TrainerState]:
-#         rng_ps, rng_st = jax.random.split(rng)
-#         ps = self.param(rng_ps)
-#         st = self.TrainerState(
-#             learner_state=self.learner.state(rng_st), opt_state=self.optimizer.init(ps)
-#         )
-#         return {"learner": ps}, st
-
-#     @partial(jit, static_argnums=0)
-#     def forward_and_backward(self, ps, x, ps_st, opt_st):
-#         (loss, ps_st), grads = value_and_grad(self.learner.forward, has_aux=True)(
-#             ps, x, ps_st
-#         )
-#         updates, opt_st = self.optimizer.update(grads, opt_st)
-#         ps = optax.apply_updates(ps, updates)
-#         return loss, ps, ps_st, opt_st
-
-#     def __call__(
-#         self, ps: Param, x: PyTree, st: TrainerState
-#     ) -> tuple[PyTree, TrainerState]:
-#         loss, ps, ps_st, opt_st = self.forward_and_backward(
-#             ps, x, st.learner_state, st.opt_state
-#         )
-#         return ps, self.TrainerState(
-#             learner_state=ps_st,
-#             step=st.step + 1,
-#             opt_state=opt_st,
-#             loss=loss,
-#         )
+    def load(self, p: Param, s: State) -> tuple[Param, State]:
+        try:
+            restored = self._manager.restore(
+                step=None,
+                args=ocp.args.Composite(
+                    param=ocp.args.PyTreeRestore(
+                        item=p,
+                        restore_args=ocp.checkpoint_utils.construct_restore_args(p),
+                    ),
+                    state_trainer=ocp.args.PyTreeRestore(
+                        item=s["trainer"],
+                        restore_args=ocp.checkpoint_utils.construct_restore_args(
+                            s["trainer"]
+                        ),
+                    ),
+                    state_dataset_iter=grain.checkpoint.CheckpointRestore(
+                        item=s["input"]
+                    ),
+                ),
+            )
+            param = restored["param"]
+            state_trainer = restored["state_trainer"]
+            state_dataset_iter = restored["state_dataset_iter"]
+            return param, State(input=state_dataset_iter, trainer=state_trainer)
+        except FileNotFoundError:
+            return p, s
 
 
-# class Experiment(BaseConfig):
-#     name: str
+class Experiment(LayerBase):
+    name: str = "mnist"
 
-#     seed: int = 0
-#     checkpointer: None = None
+    seed: int = 0
+    checkpoint_manager: CheckpointManager
+    trainer: Trainer
+    dataset: grain.IterDataset
 
-#     trainer: Trainer
-#     dataset_factory: Callable
+    observer: Callable
 
-#     observer: Callable[[Trainer, Param, State], None] = lambda t, p, s: None
+    def state(self, rng: PRNGKey) -> State:
+        return State(input=iter(self.dataset))
 
-#     def run(self):
-#         trainer_dataset = self.dataset_factory()
-#         param, state = self.trainer.init(jax.random.key(self.seed))
-#         if self.checkpointer:
-#             trainer_dataset, param, state = self.checkpointer.load(
-#                 trainer_dataset, param, state
-#             )
+    def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
+        P, S = self.trainer(x, p["trainer"], s["trainer"])
+        return Param(trainer=P), State(trainer=S, input=s["input"])
 
-#         self.observer(self.trainer, param, state)
+    def run(self):
+        p, s = self.init(self.seed)
+        p, s = self.checkpoint_manager.load(p, s)
+        self.observer(self, p, s)
 
-#         for batch in trainer_dataset:
-#             param, state = self.trainer(param, batch, state)
+        for x in s["input"]:
+            p, s = self(x, p, s)
 
-#             if self.checkpointer:
-#                 self.checkpointer.save(trainer_dataset, param, state)
+            self.checkpoint_manager.save(p, s)
+            self.observer(self, p, s)
 
-#             self.observer(self.trainer, param, state)
-
-#         return param, state
+        return p, s
 
 
 # #####
-# # Experiment related
+# Experiments
 # #####
 
-# import os
-# import numpy as np
+
+class ShakespeareChar(grain.sources.RandomAccessDataSource):
+
+    def __init__(
+        self,
+        dir: str = "data",
+        dataset: str = "shakespeare_char",
+        split="train",
+        block_size=256,
+    ):
+        self._block_size = block_size
+        self._data = np.memmap(
+            os.path.join(dir, dataset, f"{split}.bin"), dtype=np.uint16, mode="r"
+        )
+
+    def __getitem__(self, i):
+        return {
+            "feature": self._data[i : i + self._block_size],
+            "label": self._data[i + 1 : i + self._block_size + 1],
+        }
+
+    def __len__(self):
+        return len(self._data) - self._block_size
 
 
-# def dataset(split="train", batch_size=64, block_size=256, seed=0, n_batches=5000):
-#     dataset_name = "shakespeare_char"
-#     data_dir = os.path.join("data", dataset_name)
-#     data = np.memmap(os.path.join(data_dir, f"{split}.bin"), dtype=np.uint16, mode="r")
-
-#     rng = np.random.default_rng(seed)
-
-#     for _ in range(n_batches):
-#         ix = rng.choice(range(0, len(data) - block_size), (batch_size,))
-#         x = np.take(data, [range(i, i + block_size) for i in ix])
-#         y = np.take(data, [range(i + 1, i + 1 + block_size) for i in ix])
-
-#         yield {"feature": x, "label": y}
+def causal_self_attention(
+    w_init,
+    b_init,
+    n_embd=384,
+    n_head=6,
+):
+    return Chain(
+        Linear(in_dim=n_embd, out_dim=3 * n_embd, w_init=w_init, b_init=b_init),
+        partial(jnp.dsplit, indices_or_sections=3),
+        partial(map, lambda x: jnp.reshape(x, x.shape[:-1] + (n_head, -1))),
+    )
 
 
 # n_layer = 6
