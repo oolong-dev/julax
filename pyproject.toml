@@ -1,7 +1,23 @@
 [project]
 name = "julax"
 version = "0.0.1"
-description = "JUst Layers over JAX"
+description = "Just Layers over JAX"
 readme = "README.md"
+authors = [
+    { name = "Jun Tian", email = "tianjun.cpp@gmail.com" }
+]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "jax>=0.7.2",
+]
+
+[project.scripts]
+julax = "julax:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[[tool.uv.index]]
+url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
+default = true

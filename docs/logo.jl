@@ -23,7 +23,7 @@ setcolor(jax_blue)
 circle(Point(0, 0), R, action=:fill)
 setline(S)
 setcolor("#ffffff")
-circle(Point(0, 0), R - S / 2, action=:stroke)
+circle(Point(0, 0), R - S / 2 + 1, action=:stroke)
 
 R1 = R * r
 P1 = (R - R1) * sqrt(2) / 2
@@ -31,7 +31,7 @@ setcolor(jax_green)
 circle(Point(P1, P1), R1, action=:fill)
 setline(S)
 setcolor("#ffffff")
-circle(Point(P1, P1), R1 - S / 2, action=:stroke)
+circle(Point(P1, P1), R1 - S / 2 + 1, action=:stroke)
 
 R2 = R * r^2
 P2 = (R - R2) * sqrt(2) / 2
@@ -39,7 +39,7 @@ setcolor(jax_purple)
 circle(Point(P2, P2), R2, action=:fill)
 setline(S)
 setcolor("#ffffff")
-circle(Point(P2, P2), R2 - S / 2, action=:stroke)
+circle(Point(P2, P2), R2 - S / 2 + 1, action=:stroke)
 
 R3 = R * r^3
 P3 = (R - R3) * sqrt(2) / 2
@@ -47,7 +47,7 @@ setcolor(Luxor.julia_red)
 circle(Point(P3, P3), R3, action=:fill)
 setline(S)
 setcolor("#ffffff")
-circle(Point(P3, P3), R3 - S / 2, action=:stroke)
+circle(Point(P3, P3), R3 - S / 2 + 1, action=:stroke)
 
 finish()
 preview()
