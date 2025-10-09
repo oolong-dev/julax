@@ -1,3 +1,7 @@
-from julax import main
+import inspect
 
-main()
+from julax import LayerBase
+
+
+def test_smoke():
+    assert inspect.isclass(LayerBase)
