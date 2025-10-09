@@ -38,6 +38,26 @@ class Chain(LayerBase):
 #####
 
 
+class Linear(LayerBase):
+    in_dim: int
+    out_dim: int
+    w_init: Initializer
+    b_init: None | Initializer = None
+
+    def param(self, rng: PRNG) -> Param:
+        rng_w, rng_b = jax.random.split(rng)
+        return Param(
+            w=self.w_init(rng_w, (self.in_dim, self.out_dim)),
+            b=self.b_init(rng_b, (self.out_dim,)) if self.b_init else None,
+        )
+
+    def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
+        o = jnp.einsum("...d,dh->...h", x, p["w"])
+        if "b" in p:
+            o += p["b"]
+        return o, s
+
+
 class Dropout(LayerBase):
     rate: float
 
