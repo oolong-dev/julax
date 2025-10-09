@@ -80,7 +80,11 @@ def test_reduce_imperative():
             x = np.arange(1, 1 + np.prod(input_shape), dtype="float32").reshape(
                 input_shape
             )
-            x /= x.mean()
+            if reduction == "prod":
+                # make numbers smaller to avoid overflow
+                x = x / x.astype("float64").mean() / 10
+            else:
+                x = x / x.astype("float64").mean()
             result_numpy = reduce(x, pattern, reduction, **axes_lengths)
             layer = Reduce(pattern, reduction, **axes_lengths)
             for shape in wrong_shapes:
