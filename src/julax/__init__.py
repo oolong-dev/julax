@@ -11,6 +11,7 @@ from .core import (
     to_layer,
 )
 from .einops import EinMix, Rearrange, Reduce
+from .experiment import Experiment
 from .layers import (
     Chain,
     Dropout,
@@ -37,6 +38,8 @@ __all__ = [
     "EinMix",
     "Rearrange",
     "Reduce",
+    # experiment
+    "Experiment",
     # layers
     "Chain",
     "Dropout",
