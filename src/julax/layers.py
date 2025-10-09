@@ -3,7 +3,7 @@ from typing import Callable
 from jax import Array
 import jax
 import jax.numpy as jnp
-from jax.nn.initializers import Initializer, ones, zeros, variance_scaling
+from jax.nn.initializers import Initializer, lecun_normal, ones, zeros, variance_scaling
 
 from .core import PRNG, LayerBase, LayerLike, PyTree, Param, State, dispatch
 
@@ -41,8 +41,8 @@ class Chain(LayerBase):
 class Linear(LayerBase):
     in_dim: int
     out_dim: int
-    w_init: Initializer
-    b_init: None | Initializer = None
+    w_init: Initializer = lecun_normal()
+    b_init: None | Initializer = zeros
 
     def param(self, rng: PRNG) -> Param:
         rng_w, rng_b = jax.random.split(rng)
@@ -97,14 +97,7 @@ def test_mode(s: State):
 class Embedding(LayerBase):
     in_dim: int
     out_dim: int
-    w_init: Initializer = variance_scaling(
-        2.0,
-        "fan_out",
-        "truncated_normal",
-        in_axis=-2,
-        out_axis=-1,
-        batch_axis=(),
-    )
+    w_init: Initializer = variance_scaling(1.0, "fan_in", "normal", out_axis=0)
 
     def param(self, rng: PRNG) -> Param:
         return Param(w=self.w_init(rng, (self.in_dim, self.out_dim)))
