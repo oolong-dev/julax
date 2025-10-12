@@ -10,6 +10,9 @@
 # ///
 
 import logging
+
+logging.basicConfig(level=logging.INFO)
+
 from datetime import datetime
 import os
 
@@ -32,9 +35,6 @@ from julax import (
     default_observer,
     test_mode,
 )
-
-
-logging.basicConfig(level=logging.INFO)
 
 
 def evaluate(x: Experiment, p: Param, s: State):
