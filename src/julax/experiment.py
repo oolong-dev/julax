@@ -1,10 +1,13 @@
-from typing import Any, Callable
 from .core import PRNG, LayerBase, Trainer, State, Param, PyTree
 import grain
 
 import orbax.checkpoint as ocp
 
 import logging
+
+from pydantic import Field
+
+from .observers import default_observer, ObserverBase
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +20,7 @@ class Experiment(LayerBase):
     trainer: Trainer
     dataset: grain.IterDataset
 
-    observer: Callable[["Experiment", Param, State], Any]
+    observer: ObserverBase = Field(default_factory=default_observer)
 
     def state(self, rng: PRNG) -> State:
         return State(input=iter(self.dataset))
@@ -74,7 +77,8 @@ class Experiment(LayerBase):
         for x in s["input"]:
             p, s = self(x, p, s)
 
-            self.save(p, s)
             self.observer(self, p, s)
+            self.save(p, s)
 
+        self.checkpoint_manager.wait_until_finished()
         return p, s

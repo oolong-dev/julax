@@ -18,8 +18,18 @@ from .layers import (
     Embedding,
     F,
     LayerNorm,
+    Linear,
     test_mode,
     train_mode,
+)
+from .observers import (
+    ObserverBase,
+    CompositeObserver,
+    DoAtStep0,
+    DoEveryNSteps,
+    LossLogger,
+    StepTimeLogger,
+    default_observer,
 )
 
 __all__ = [
@@ -45,7 +55,16 @@ __all__ = [
     "Dropout",
     "Embedding",
     "F",
+    "Linear",
     "LayerNorm",
     "test_mode",
     "train_mode",
+    # observers
+    "ObserverBase",
+    "CompositeObserver",
+    "DoAtStep0",
+    "DoEveryNSteps",
+    "LossLogger",
+    "StepTimeLogger",
+    "default_observer",
 ]

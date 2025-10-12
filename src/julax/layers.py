@@ -3,7 +3,13 @@ from typing import Callable
 from jax import Array
 import jax
 import jax.numpy as jnp
-from jax.nn.initializers import Initializer, lecun_normal, ones, zeros, variance_scaling
+from jax.nn.initializers import (
+    Initializer,
+    lecun_normal,
+    ones,
+    zeros,
+    variance_scaling,
+)
 
 from .core import PRNG, LayerBase, LayerLike, PyTree, Param, State, dispatch
 
