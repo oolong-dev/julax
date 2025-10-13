@@ -31,7 +31,7 @@ dev = [
 ]
 
 [tool.ruff.lint]
-ignore = ["E402", "F811"]
+ignore = ["F811"]
 
 [[tool.uv.index]]
 url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
