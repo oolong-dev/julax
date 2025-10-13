@@ -36,8 +36,8 @@ from julax import (
 
 from absl import logging as absl_logging
 
-absl_logging.set_verbosity(absl_logging.INFO)
 logging.root.setLevel(logging.INFO)
+absl_logging.use_python_logging()
 
 
 def evaluate(x: Experiment, p: Param, s: State):
