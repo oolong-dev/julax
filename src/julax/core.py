@@ -25,6 +25,7 @@ dispatch = plum.Dispatcher(warn_redefinition=True)
 #####
 
 # TODO: use RootModel[dict] for better customization
+# Or maybe SimpleNamespace?
 Param: TypeAlias = dict
 State: TypeAlias = dict
 

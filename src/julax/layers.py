@@ -26,19 +26,51 @@ def to_layer(x: Callable):
     return F(f=x)
 
 
-class Chain(LayerBase):
+class NamedLayers(LayerBase):
+    names: tuple[str, ...]
     layers: tuple[LayerLike, ...]
 
-    def __init__(self, *args):
-        super().__init__(layers=args)
+    def __init__(self, *args, **kwargs):
+        names = tuple(f"layer_{i}" for i in range(len(args))) + tuple(kwargs.keys())
+        layers = tuple(args) + tuple(kwargs.values())
+        super().__init__(names=names, layers=layers)
 
+    def sublayers(self) -> dict:
+        return {k: v for k, v in zip(self.names, self.layers)}
+
+
+class Chain(NamedLayers):
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         h = x
-        S = ()
-        for layer, p, s in zip(self.layers, p["layers"], s["layers"]):
-            h, sᵢ = layer(h, p, s)
-            S += (sᵢ,)
-        return h, State(layers=S)
+        S = {}
+        for name, layer in zip(self.names, self.layers):
+            h, S[name] = layer(h, p[name], s[name])
+        return h, State(**S)
+
+
+class Branch(NamedLayers):
+    """1 -> N"""
+
+    def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
+        O = {}
+        S = {}
+        for name, layer in zip(self.names, self.layers):
+            O[name], S[name] = layer(x, p[name], s[name])
+        # ??? return dict?
+        return tuple(O.values()), State(**S)
+
+
+class Parallel(NamedLayers):
+    """N -> N"""
+
+    def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
+        assert len(x) == len(self.layers)
+        O = {}
+        S = {}
+        for name, layer, xᵢ in zip(self.names, self.layers, x):
+            O[name], S[name] = layer(xᵢ, p[name], s[name])
+        # ??? return dict?
+        return tuple(O.values()), State(**S)
 
 
 #####
