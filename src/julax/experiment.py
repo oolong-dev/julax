@@ -1,3 +1,8 @@
+import jax
+from jax.sharding import PartitionSpec
+
+from julax.utils import create_mesh
+
 from .core import PRNG, LayerBase, Trainer, State, Param, PyTree
 import grain
 
@@ -18,7 +23,10 @@ class Experiment(LayerBase):
     seed: int = 0
     checkpoint_manager: ocp.CheckpointManager
     trainer: Trainer
+
     dataset: grain.IterDataset
+    batch_axis_names: list[str] = ["data"]
+    mesh_shape: dict[str, int] = {"data": -1}
 
     observer: ObserverBase = Field(default_factory=default_observer)
 
@@ -71,14 +79,21 @@ class Experiment(LayerBase):
             return p, s
 
     def run(self):
-        p, s = self.restore()
-        self.observer(self, p, s)
-
-        for x in s["input"]:
-            p, s = self(x, p, s)
-
+        with create_mesh(self.mesh_shape) as mesh:
+            p, s = self.restore()
             self.observer(self, p, s)
-            self.save(p, s)
 
-        self.checkpoint_manager.wait_until_finished()
-        return p, s
+            for x_local in s["input"]:
+                x = jax.make_array_from_process_local_data(
+                    sharding=jax.sharding.NamedSharding(
+                        mesh, PartitionSpec(self.batch_axis_names)
+                    ),
+                    local_data=x_local,
+                )
+                p, s = self(x, p, s)
+
+                self.observer(self, p, s)
+                self.save(p, s)
+
+            self.checkpoint_manager.wait_until_finished()
+            return p, s

@@ -1,11 +1,10 @@
 from abc import ABC, abstractmethod
-
+import plum
 from functools import partial
 from typing import Annotated, Callable, TypeAlias, Any
 
 import optax
 from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError
-import plum
 
 
 #####
@@ -14,15 +13,9 @@ import jax
 import jax.numpy as jnp
 from jax import jit, value_and_grad, Array
 
-PRNG: TypeAlias = Array
-PyTree: TypeAlias = Any
-
-
 #####
 
-dispatch = plum.Dispatcher(warn_redefinition=True)
-
-#####
+from julax.base import PRNG, PyTree, dispatch
 
 # TODO: use RootModel[dict] for better customization
 # Or maybe SimpleNamespace?
