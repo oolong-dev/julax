@@ -11,6 +11,7 @@ import grain
 import jax
 import numpy as np
 import optax
+from jax.nn.initializers import truncated_normal
 from julax.core import Learner, Trainer
 from julax.experiment import Experiment
 from julax.layers import (
@@ -52,6 +53,7 @@ def main(
     num_heads: int = 12,
     head_dim: int = 64,
     num_layers: int = 2,
+    param_std: float = 0.02,
 ):
     return Experiment(
         name="mini_transformer",
@@ -60,7 +62,11 @@ def main(
                 feature_name="input_ids",
                 label_name="target_labels",
                 model=Chain(
-                    emb=Embedding(in_dim=num_vocab, out_dim=dim),
+                    emb=Embedding(
+                        in_dim=num_vocab,
+                        out_dim=dim,
+                        w_init=truncated_normal(stddev=param_std),
+                    ),
                     blocks=Repeated(
                         n=num_layers,
                         layer=Chain(
@@ -75,17 +81,27 @@ def main(
                                     act=jax.nn.gelu,
                                     mlp=Chain(
                                         up=Linear(
-                                            in_dim=dim, out_dim=4 * dim, b_init=None
+                                            in_dim=dim,
+                                            out_dim=4 * dim,
+                                            w_init=truncated_normal(stddev=param_std),
+                                            b_init=None,
                                         ),
                                         down=Linear(
-                                            in_dim=4 * dim, out_dim=dim, b_init=None
+                                            in_dim=4 * dim,
+                                            out_dim=dim,
+                                            w_init=truncated_normal(stddev=param_std),
+                                            b_init=None,
                                         ),
                                     ),
                                 )
                             ),
                         ),
                     ),
-                    unemb=Unembedding(in_dim=dim, out_dim=num_vocab),
+                    unemb=Unembedding(
+                        in_dim=dim,
+                        out_dim=num_vocab,
+                        w_init=truncated_normal(stddev=param_std),
+                    ),
                 ),
                 loss_fn=optax.softmax_cross_entropy_with_integer_labels,
             ),
