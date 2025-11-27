@@ -11,14 +11,11 @@
 
 import logging
 
-from datetime import datetime
-import os
 
 import grain
 import jax
 from jax.nn.initializers import truncated_normal
 import optax
-import orbax.checkpoint as ocp
 import tensorflow_datasets as tfds
 
 from julax import (
@@ -67,12 +64,6 @@ def evaluate(x: Experiment, p: Param, s: State):
 
 E = Experiment(
     name="mnist",
-    checkpoint_manager=ocp.CheckpointManager(
-        directory=os.path.join(
-            os.getcwd(), "checkpoints", datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        ),
-        options=ocp.CheckpointManagerOptions(save_interval_steps=100),
-    ),
     trainer=Trainer(
         learner=Learner(
             model=Chain(
@@ -114,3 +105,4 @@ E = Experiment(
 )
 
 E.run()
+E.close()

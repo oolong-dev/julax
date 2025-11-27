@@ -11,11 +11,11 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError
 
 import jax
 import jax.numpy as jnp
-from jax import jit, value_and_grad, Array
+from jax import jit, value_and_grad
 
 #####
 
-from julax.base import PRNG, PyTree, dispatch
+from julax.base import PRNG, OutShardingType, PyTree, dispatch
 
 # TODO: use RootModel[dict] for better customization
 # Or maybe SimpleNamespace?
@@ -26,6 +26,10 @@ State: TypeAlias = dict
 
 
 class LayerBase(BaseModel, ABC):
+    param_dtype: jnp.dtype | None = None
+    param_sharding: OutShardingType = None
+    out_sharding: OutShardingType = None
+
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
         frozen=True,
@@ -134,7 +138,7 @@ LayerLike = Annotated[LayerBase, BeforeValidator(to_layer)]
 
 
 class Learner(LayerBase):
-    loss_fn: Callable[[PyTree, PyTree], Array]
+    loss_fn: Callable[[PyTree, PyTree], Any]
     model: LayerBase
     agg: Callable = jnp.mean
     feature_name: str = "feature"
