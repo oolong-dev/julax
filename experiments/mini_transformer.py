@@ -53,10 +53,12 @@ def main(
     head_dim: int = 64,
     num_layers: int = 2,
 ):
-    Experiment(
-        name=__file__,
+    return Experiment(
+        name="mini_transformer",
         trainer=Trainer(
             learner=Learner(
+                feature_name="input_ids",
+                label_name="target_labels",
                 model=Chain(
                     emb=Embedding(in_dim=num_vocab, out_dim=dim),
                     blocks=Repeated(
@@ -72,8 +74,12 @@ def main(
                                     norm_mlp=LayerNorm(dim=dim),
                                     act=jax.nn.gelu,
                                     mlp=Chain(
-                                        up=Linear(in_dim=dim, out_dim=4 * dim),
-                                        down=Linear(in_dim=4 * dim, out_dim=dim),
+                                        up=Linear(
+                                            in_dim=dim, out_dim=4 * dim, b_init=None
+                                        ),
+                                        down=Linear(
+                                            in_dim=4 * dim, out_dim=dim, b_init=None
+                                        ),
                                     ),
                                 )
                             ),
@@ -88,9 +94,15 @@ def main(
         dataset=(
             grain.MapDataset.source(FakeSource(seq_len))
             .shuffle(seed=seed)
+            .repeat()
             .batch(batch_size=global_batch_size)
             .slice(slice(num_steps))
             .to_iter_dataset()
         ),
         observer=default_observer(),
     )
+
+
+x = main()
+x.run()
+x.close()

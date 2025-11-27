@@ -158,7 +158,7 @@ class Trainer(LayerBase):
     optimizer: Any
 
     def state(self, rng: PRNG) -> State:
-        return State(optimizer=None, step=0, loss=0.0)
+        return State(optimizer=None, loss=0.0)
 
     @dispatch
     def init(
@@ -169,9 +169,7 @@ class Trainer(LayerBase):
 
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         loss, state = self.learner(x, p["learner"], s["learner"])
-        return loss, State(
-            learner=state, optimizer=s["optimizer"], step=s["step"] + 1, loss=loss
-        )
+        return loss, State(learner=state, optimizer=s["optimizer"], loss=loss)
 
     @partial(jit, static_argnums=0)
     def forward_and_backward(
@@ -182,5 +180,6 @@ class Trainer(LayerBase):
         P = optax.apply_updates(p, updates)
         return P, S
 
+    @dispatch
     def __call__(self, x: PyTree, p: Param, s: State) -> tuple[Param, State]:
         return self.forward_and_backward(x, p, s)

@@ -144,7 +144,7 @@ class Linear(LayerBase):
 
     def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
         o = jnp.einsum("...d,dh->...h", x, p["w"], out_sharding=self.out_sharding)
-        if p["b"]:
+        if p["b"] is not None:
             o += p["b"]
         return o, s
 

@@ -59,7 +59,7 @@ def evaluate(x: Experiment, p: Param, s: State):
         n_total += 32
     acc = n_correct / n_total
 
-    logging.info(f"Accuracy at step {s['trainer']['step']}: {acc}")
+    logging.info(f"Accuracy at step {s['step']}: {acc}")
 
 
 E = Experiment(

@@ -31,11 +31,11 @@ class Experiment(LayerBase):
     observer: ObserverBase = Field(default_factory=default_observer)
 
     def state(self, rng: PRNG) -> State:
-        return State(input=iter(self.dataset))
+        return State(input=iter(self.dataset), step=0)
 
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         P, S = self.trainer(x, p["trainer"], s["trainer"])
-        return Param(trainer=P), State(trainer=S, input=s["input"])
+        return Param(trainer=P), State(trainer=S, input=s["input"], step=s["step"] + 1)
 
     def save(self, p: Param, s: State):
         if self.checkpoint_manager:
