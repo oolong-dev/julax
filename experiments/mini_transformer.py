@@ -7,12 +7,15 @@
 # julax = { path = "../", editable = true }
 # ///
 
+from functools import partial
 import grain
 import jax
+import jax.numpy as jnp
 import numpy as np
 import optax
 from jax.nn.initializers import truncated_normal
 from julax.core import Learner, Trainer
+from julax.einops import Rearrange
 from julax.experiment import Experiment
 from julax.layers import (
     Chain,
@@ -72,13 +75,48 @@ def main(
                         layer=Chain(
                             attn=SkipConnection(
                                 layer=Chain(
-                                    norm_attn=LayerNorm(dim=dim), attn=lambda x: x
+                                    norm_attn=LayerNorm(dim=dim),
+                                    attn=Chain(
+                                        # qkv projection
+                                        Linear(
+                                            in_dim=dim,
+                                            out_dim=3 * dim,
+                                            w_init=truncated_normal(stddev=param_std),
+                                            b_init=None,
+                                        ),
+                                        Rearrange(
+                                            "B T (qkv N H) -> B T (qkv N) H",
+                                            B=global_batch_size,
+                                            T=seq_len,
+                                            qkv=3,
+                                            N=num_heads,
+                                            H=head_dim,
+                                        ),
+                                        partial(
+                                            jnp.split, indices_or_sections=3, axis=2
+                                        ),
+                                        lambda qkv: jax.nn.dot_product_attention(
+                                            *qkv, is_causal=True
+                                        ),
+                                        Rearrange(
+                                            "B T N H -> B T (N H)",
+                                            B=global_batch_size,
+                                            T=seq_len,
+                                            N=num_heads,
+                                            H=head_dim,
+                                        ),
+                                        Linear(
+                                            in_dim=dim,
+                                            out_dim=dim,
+                                            w_init=truncated_normal(stddev=param_std),
+                                            b_init=None,
+                                        ),
+                                    ),
                                 )
                             ),
                             mlp=SkipConnection(
                                 layer=Chain(
                                     norm_mlp=LayerNorm(dim=dim),
-                                    act=jax.nn.gelu,
                                     mlp=Chain(
                                         up=Linear(
                                             in_dim=dim,
@@ -86,6 +124,7 @@ def main(
                                             w_init=truncated_normal(stddev=param_std),
                                             b_init=None,
                                         ),
+                                        act=jax.nn.gelu,
                                         down=Linear(
                                             in_dim=4 * dim,
                                             out_dim=dim,

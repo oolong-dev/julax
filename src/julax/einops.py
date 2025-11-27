@@ -6,6 +6,8 @@ import jax
 import jax.numpy as jnp
 from jax.nn.initializers import Initializer
 from pydantic import computed_field
+
+from julax.base import FrozenDict
 from .core import LayerBase, Param, PyTree, State, PRNG
 
 
@@ -26,7 +28,7 @@ class Reduce(LayerBase):
 
 class Rearrange(LayerBase):
     pattern: str
-    sizes: dict
+    sizes: FrozenDict
 
     def __init__(self, pattern: str, **kwargs):
         super().__init__(pattern=pattern, sizes=kwargs)

@@ -171,7 +171,7 @@ class Trainer(LayerBase):
         loss, state = self.learner(x, p["learner"], s["learner"])
         return loss, State(learner=state, optimizer=s["optimizer"], loss=loss)
 
-    @partial(jit, static_argnums=0)
+    @partial(jit, static_argnums=0, donate_argnames=("p", "s"))
     def forward_and_backward(
         self, x: PyTree, p: Param, s: State
     ) -> tuple[Param, State]:
