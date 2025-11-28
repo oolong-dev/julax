@@ -12,6 +12,8 @@ from jax.nn.initializers import (
     variance_scaling,
 )
 
+from julax.base import Dtype
+
 from .core import PRNG, LayerBase, LayerLike, PyTree, Param, State, dispatch
 
 
@@ -202,6 +204,44 @@ class Embedding(LayerBase):
 
     def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
         return p["w"].at[x].get(out_sharding=self.out_sharding), s
+
+
+class RotaryEmbedding(LayerBase):
+    """Rotary Position Embedding."""
+
+    embedding_dims: int
+    min_timescale: int = 1
+    max_timescale: int = 10000
+    cast_as_fprop_dtype: bool = True
+    fprop_dtype: Dtype = jnp.bfloat16
+    rope_linear_scaling_factor: float = 1.0
+
+    def state(self, rng: PRNG) -> State:
+        half_embedding_dim = self.embedding_dims // 2
+        fraction = 2 * jnp.arange(0, half_embedding_dim) / self.embedding_dims
+        timescale = (
+            self.min_timescale * (self.max_timescale / self.min_timescale) ** fraction
+        )
+        if self.rope_linear_scaling_factor != 1.0:
+            timescale = timescale * self.rope_linear_scaling_factor
+        return State(timescale=timescale)
+
+    def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
+        seq_length = x.shape[1]
+        position = jnp.arange(seq_length, dtype=jnp.float32)[
+            jnp.newaxis, :, jnp.newaxis, jnp.newaxis
+        ]
+        sinusoid_inp = position / s["timescale"]
+        sin = jnp.sin(sinusoid_inp).astype(x.dtype)
+        cos = jnp.cos(sinusoid_inp).astype(x.dtype)
+        first_half, second_half = jnp.split(x, 2, axis=-1)
+        first_part = first_half * cos - second_half * sin
+        second_part = second_half * cos + first_half * sin
+        if self.cast_as_fprop_dtype:
+            first_part = first_part.astype(self.fprop_dtype)
+            second_part = second_part.astype(self.fprop_dtype)
+        x_out = jnp.concatenate((first_part, second_part), axis=-1)
+        return x_out, s
 
 
 class Unembedding(Embedding):

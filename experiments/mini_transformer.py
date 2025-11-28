@@ -21,12 +21,15 @@ from julax.layers import (
     Chain,
     Linear,
     LayerNorm,
+    Parallel,
     Repeated,
+    RotaryEmbedding,
     SkipConnection,
     Embedding,
     Unembedding,
 )
 from julax.observers import default_observer
+from julax.utils import identity
 
 
 class FakeSource(grain.sources.RandomAccessDataSource):
@@ -94,6 +97,17 @@ def main(
                                         ),
                                         partial(
                                             jnp.split, indices_or_sections=3, axis=2
+                                        ),
+                                        Parallel(
+                                            RotaryEmbedding(
+                                                embedding_dims=head_dim,
+                                                fprop_dtype=jnp.float32,
+                                            ),
+                                            RotaryEmbedding(
+                                                embedding_dims=head_dim,
+                                                fprop_dtype=jnp.float32,
+                                            ),
+                                            identity,
                                         ),
                                         lambda qkv: jax.nn.dot_product_attention(
                                             *qkv, is_causal=True

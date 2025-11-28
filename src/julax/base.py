@@ -8,6 +8,9 @@ PRNG: TypeAlias = Array
 PyTree: TypeAlias = Any
 OutShardingType: TypeAlias = PartitionSpec | None
 
+# TODO: isinstance(jnp.dtype, jnp.float32) fails
+Dtype: TypeAlias = Any
+
 dispatch = plum.Dispatcher(warn_redefinition=True)
 
 
