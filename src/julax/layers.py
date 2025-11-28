@@ -38,6 +38,12 @@ class SkipConnection(LayerBase):
 
 
 class Repeated(LayerBase):
+    """Applies the same layer n times sequentially.
+
+    Each repetition has independent, separately initialized parameters.
+    This is typical for transformer blocks where each layer has its own weights.
+    """
+
     n: int
     layer: LayerLike
 
