@@ -255,7 +255,7 @@ class LayerNorm(LayerBase):
     epsilon: float = 1e-5
     w_init: Initializer = ones
     b_init: Initializer = zeros
-    compute_dtype: jnp.dtype | None = None
+    compute_dtype: Dtype | None = None
 
     def param(self, rng: PRNG) -> Param:
         w_rng, b_rng = jax.random.split(rng)

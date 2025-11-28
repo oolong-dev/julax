@@ -15,7 +15,7 @@ from jax import jit, value_and_grad
 
 #####
 
-from julax.base import PRNG, OutShardingType, PyTree, dispatch
+from julax.base import PRNG, Dtype, OutShardingType, PyTree, dispatch
 
 # TODO: use RootModel[dict] for better customization
 # Or maybe SimpleNamespace?
@@ -26,7 +26,7 @@ State: TypeAlias = dict
 
 
 class LayerBase(BaseModel, ABC):
-    param_dtype: jnp.dtype | None = None
+    param_dtype: Dtype | None = None
     param_sharding: OutShardingType = None
     out_sharding: OutShardingType = None
 
