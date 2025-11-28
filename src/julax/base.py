@@ -31,3 +31,8 @@ class FrozenDict(RootModel[dict]):
 
     def __hash__(self):
         return hash(frozenset(self.root.items()))
+
+    def __eq__(self, other):
+        if isinstance(other, FrozenDict):
+            return self.root == other.root
+        return self.root == other
