@@ -209,6 +209,7 @@ class Embedding(LayerBase):
 class RotaryEmbedding(LayerBase):
     """Rotary Position Embedding."""
 
+    # Adapted from https://github.com/AI-Hypercomputer/maxtext/blob/9204d6bbbf8bb19a05ebed72a55cfec687e0e044/src/MaxText/layers/embeddings.py#L271C11-L356C17
     embedding_dims: int
     min_timescale: int = 1
     max_timescale: int = 10000

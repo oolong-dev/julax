@@ -7,6 +7,8 @@
 # julax = { path = "../", editable = true }
 # ///
 
+# Reproduce https://sdbuchanan.com/blog/jax-2/
+
 from functools import partial
 import grain
 import jax
