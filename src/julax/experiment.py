@@ -21,34 +21,37 @@ class Experiment(LayerBase):
     name: str = "mnist"
 
     seed: int = 0
-    checkpoint_manager: ocp.CheckpointManager
     trainer: Trainer
 
     dataset: grain.IterDataset
     batch_axis_names: list[str] = ["data"]
     mesh_shape: dict[str, int] = {"data": -1}
 
+    checkpoint_manager: ocp.CheckpointManager | None = None
     observer: ObserverBase = Field(default_factory=default_observer)
 
     def state(self, rng: PRNG) -> State:
-        return State(input=iter(self.dataset))
+        return State(input=iter(self.dataset), step=0)
 
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         P, S = self.trainer(x, p["trainer"], s["trainer"])
-        return Param(trainer=P), State(trainer=S, input=s["input"])
+        return Param(trainer=P), State(trainer=S, input=s["input"], step=s["step"] + 1)
 
     def save(self, p: Param, s: State):
-        self.checkpoint_manager.save(
-            s["trainer"]["step"],
-            args=ocp.args.Composite(
-                param=ocp.args.PyTreeSave(item=p),
-                state_trainer=ocp.args.PyTreeSave(item=s["trainer"]),
-                state_dataset_iter=grain.checkpoint.CheckpointSave(item=s["input"]),
-            ),
-        )
+        if self.checkpoint_manager:
+            self.checkpoint_manager.save(
+                s["step"],
+                args=ocp.args.Composite(
+                    param=ocp.args.PyTreeSave(item=p),
+                    state_trainer=ocp.args.PyTreeSave(item=s["trainer"]),
+                    state_dataset_iter=grain.checkpoint.CheckpointSave(item=s["input"]),
+                ),
+            )
 
     def restore(self) -> tuple[Param, State]:
         p, s = self.init(self.seed)
+        if self.checkpoint_manager is None:
+            return p, s
         try:
             restored = self.checkpoint_manager.restore(
                 step=None,
@@ -78,7 +81,11 @@ class Experiment(LayerBase):
             )
             return p, s
 
-    def run(self):
+    def close(self):
+        if self.checkpoint_manager:
+            self.checkpoint_manager.close()
+
+    def run(self) -> tuple[Param, State]:
         with create_mesh(self.mesh_shape) as mesh:
             p, s = self.restore()
             self.observer(self, p, s)
@@ -95,5 +102,4 @@ class Experiment(LayerBase):
                 self.observer(self, p, s)
                 self.save(p, s)
 
-            self.checkpoint_manager.wait_until_finished()
             return p, s

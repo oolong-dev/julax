@@ -1,6 +1,6 @@
 [project]
 name = "julax"
-version = "0.0.3-dev"
+version = "0.0.3"
 description = "Just Layers over JAX"
 readme = "README.md"
 authors = [
@@ -28,6 +28,9 @@ build-backend = "hatchling.build"
 dev = [
     "pytest>=8.3.2",
     "pytest-cov>=5.0.0",
+]
+tpu = [
+    "jax[tpu]>=0.7.2",
 ]
 
 [tool.ruff.lint]

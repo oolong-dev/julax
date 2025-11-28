@@ -1,7 +1,8 @@
 from typing import Callable
 
-from jax import Array
 import jax
+from jax import Array
+from jax.sharding import PartitionSpec as P
 import jax.numpy as jnp
 from jax.nn.initializers import (
     Initializer,
@@ -10,6 +11,8 @@ from jax.nn.initializers import (
     zeros,
     variance_scaling,
 )
+
+from julax.base import Dtype
 
 from .core import PRNG, LayerBase, LayerLike, PyTree, Param, State, dispatch
 
@@ -26,6 +29,31 @@ def to_layer(x: Callable):
     return F(f=x)
 
 
+class SkipConnection(LayerBase):
+    layer: LayerLike
+    connection: Callable = jnp.add
+
+    def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
+        S = State()
+        o, S["layer"] = self.layer(x, p["layer"], s["layer"])
+        return self.connection(o, x), S
+
+
+class Repeated(LayerBase):
+    n: int
+    layer: LayerLike
+
+    def sublayers(self) -> dict:
+        return {f"layer_{i}": self.layer for i in range(self.n)}
+
+    def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
+        S = State()
+        o = x
+        for i in range(self.n):
+            o, S[f"layer_{i}"] = self.layer(o, p[f"layer_{i}"], s[f"layer_{i}"])
+        return o, S
+
+
 class NamedLayers(LayerBase):
     names: tuple[str, ...]
     layers: tuple[LayerLike, ...]
@@ -40,37 +68,46 @@ class NamedLayers(LayerBase):
 
 
 class Chain(NamedLayers):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         h = x
-        S = {}
+        S = State()
         for name, layer in zip(self.names, self.layers):
             h, S[name] = layer(h, p[name], s[name])
-        return h, State(**S)
+        return h, S
 
 
 class Branch(NamedLayers):
     """1 -> N"""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         O = {}
-        S = {}
+        S = State()
         for name, layer in zip(self.names, self.layers):
             O[name], S[name] = layer(x, p[name], s[name])
         # ??? return dict?
-        return tuple(O.values()), State(**S)
+        return tuple(O.values()), S
 
 
 class Parallel(NamedLayers):
     """N -> N"""
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         assert len(x) == len(self.layers)
         O = {}
-        S = {}
+        S = State()
         for name, layer, xᵢ in zip(self.names, self.layers, x):
             O[name], S[name] = layer(xᵢ, p[name], s[name])
         # ??? return dict?
-        return tuple(O.values()), State(**S)
+        return tuple(O.values()), S
 
 
 #####
@@ -85,13 +122,31 @@ class Linear(LayerBase):
     def param(self, rng: PRNG) -> Param:
         rng_w, rng_b = jax.random.split(rng)
         return Param(
-            w=self.w_init(rng_w, (self.in_dim, self.out_dim)),
-            b=self.b_init(rng_b, (self.out_dim,)) if self.b_init else None,
+            w=self.w_init(
+                rng_w,
+                (self.in_dim, self.out_dim),
+                dtype=self.param_dtype,
+                out_sharding=self.param_sharding,
+            ),
+            b=(
+                self.b_init(
+                    rng_b,
+                    (self.out_dim,),
+                    dtype=self.param_dtype,
+                    out_sharding=(
+                        None
+                        if self.param_sharding is None
+                        else P(self.param_sharding[-1])
+                    ),
+                )
+                if self.b_init
+                else None
+            ),
         )
 
     def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
-        o = jnp.einsum("...d,dh->...h", x, p["w"])
-        if "b" in p:
+        o = jnp.einsum("...d,dh->...h", x, p["w"], out_sharding=self.out_sharding)
+        if p["b"] is not None:
             o += p["b"]
         return o, s
 
@@ -138,28 +193,91 @@ class Embedding(LayerBase):
     w_init: Initializer = variance_scaling(1.0, "fan_in", "normal", out_axis=0)
 
     def param(self, rng: PRNG) -> Param:
-        return Param(w=self.w_init(rng, (self.in_dim, self.out_dim)))
+        return Param(
+            w=self.w_init(
+                rng,
+                (self.in_dim, self.out_dim),
+                dtype=self.param_dtype,
+                out_sharding=self.param_sharding,
+            )
+        )
 
     def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
-        return p["w"][x], s
+        return p["w"].at[x].get(out_sharding=self.out_sharding), s
+
+
+class RotaryEmbedding(LayerBase):
+    """Rotary Position Embedding."""
+
+    # Adapted from https://github.com/AI-Hypercomputer/maxtext/blob/9204d6bbbf8bb19a05ebed72a55cfec687e0e044/src/MaxText/layers/embeddings.py#L271C11-L356C17
+    embedding_dims: int
+    min_timescale: int = 1
+    max_timescale: int = 10000
+    cast_as_fprop_dtype: bool = True
+    fprop_dtype: Dtype = jnp.bfloat16
+    rope_linear_scaling_factor: float = 1.0
+
+    def state(self, rng: PRNG) -> State:
+        half_embedding_dim = self.embedding_dims // 2
+        fraction = 2 * jnp.arange(0, half_embedding_dim) / self.embedding_dims
+        timescale = (
+            self.min_timescale * (self.max_timescale / self.min_timescale) ** fraction
+        )
+        if self.rope_linear_scaling_factor != 1.0:
+            timescale = timescale * self.rope_linear_scaling_factor
+        return State(timescale=timescale)
+
+    def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
+        seq_length = x.shape[1]
+        position = jnp.arange(seq_length, dtype=jnp.float32)[
+            jnp.newaxis, :, jnp.newaxis, jnp.newaxis
+        ]
+        sinusoid_inp = position / s["timescale"]
+        sin = jnp.sin(sinusoid_inp).astype(x.dtype)
+        cos = jnp.cos(sinusoid_inp).astype(x.dtype)
+        first_half, second_half = jnp.split(x, 2, axis=-1)
+        first_part = first_half * cos - second_half * sin
+        second_part = second_half * cos + first_half * sin
+        if self.cast_as_fprop_dtype:
+            first_part = first_part.astype(self.fprop_dtype)
+            second_part = second_part.astype(self.fprop_dtype)
+        x_out = jnp.concatenate((first_part, second_part), axis=-1)
+        return x_out, s
+
+
+class Unembedding(Embedding):
+    def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
+        return jnp.einsum("bld,dn->bln", x, p["w"], out_sharding=self.out_sharding), s
 
 
 class LayerNorm(LayerBase):
     dim: int
-    ϵ: float = 1e-5
+    epsilon: float = 1e-5
     w_init: Initializer = ones
     b_init: Initializer = zeros
+    compute_dtype: Dtype | None = None
 
     def param(self, rng: PRNG) -> Param:
         w_rng, b_rng = jax.random.split(rng)
         return Param(
-            w=self.w_init(w_rng, (self.dim,)), b=self.b_init(b_rng, (self.dim,))
+            w=self.w_init(
+                w_rng,
+                (self.dim,),
+                dtype=self.param_dtype,
+                out_sharding=self.out_sharding,
+            ),
+            b=self.b_init(
+                b_rng,
+                (self.dim,),
+                dtype=self.param_dtype,
+                out_sharding=(
+                    None if self.param_sharding is None else P(self.param_sharding[-1])
+                ),
+            ),
         )
 
     def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
-        x_mean = x.mean(axis=-1, keepdims=True)
-        x -= x_mean
-        var = (x * x).mean(axis=-1, keepdims=True)
-        x = x * jax.lax.rsqrt(var + self.ϵ)
-        # TODO: cast dtype
-        return x * p["w"] + p["b"], s
+        x_std = jax.nn.standardize(
+            x.astype(self.compute_dtype), epsilon=self.epsilon
+        ).astype(self.param_dtype)
+        return x_std * p["w"] + p["b"], s

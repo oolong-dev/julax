@@ -1,6 +1,8 @@
 import logging
 import time
 from typing import Protocol
+
+import jax
 from .core import Param, State
 
 logger = logging.getLogger(__name__)
@@ -27,7 +29,7 @@ class DoEveryNSteps(ObserverBase):
         self.observer = observer
 
     def __call__(self, x, p: Param, s: State):
-        step = s["trainer"]["step"]
+        step = s["step"]
         if step % self.n == 0:
             return self.observer(x, p, s)
 
@@ -37,7 +39,7 @@ class DoAtStep0(ObserverBase):
         self.observer = observer
 
     def __call__(self, x, p: Param, s: State):
-        step = s["trainer"]["step"]
+        step = s["step"]
         if step == 0:
             return self.observer(x, p, s)
 
@@ -59,9 +61,8 @@ class CompositeObserver(ObserverBase):
 class LossLogger(ObserverBase):
     def __call__(self, x, p: Param, s: State):
         loss = s["trainer"]["loss"]
-        step = s["trainer"]["step"]
-        if step > 0:
-            logger.info(f"Step {step}: loss = {loss}")
+        step = s["step"]
+        jax.debug.print("Step {step}: loss={loss}", step=step, loss=loss)
 
 
 class StepTimeLogger(ObserverBase):
@@ -81,7 +82,7 @@ class StepTimeLogger(ObserverBase):
         if self.step_count % self.n == 0:
             now = time.perf_counter()
             avg_time = (now - self.last_time) / self.step_count
-            step = s["trainer"]["step"]
+            step = s["step"]
             logger.info(
                 f"Step {step}: avg step time over last {self.step_count} steps: {avg_time:.6f}s"
             )
@@ -90,4 +91,4 @@ class StepTimeLogger(ObserverBase):
 
 
 def default_observer() -> CompositeObserver:
-    return LossLogger() * StepTimeLogger()
+    return DoEveryNSteps(LossLogger(), n=10) * StepTimeLogger()

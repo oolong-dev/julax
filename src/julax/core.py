@@ -11,11 +11,11 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, ValidationError
 
 import jax
 import jax.numpy as jnp
-from jax import jit, value_and_grad, Array
+from jax import jit, value_and_grad
 
 #####
 
-from julax.base import PRNG, PyTree, dispatch
+from julax.base import PRNG, Dtype, OutShardingType, PyTree, dispatch
 
 # TODO: use RootModel[dict] for better customization
 # Or maybe SimpleNamespace?
@@ -26,6 +26,10 @@ State: TypeAlias = dict
 
 
 class LayerBase(BaseModel, ABC):
+    param_dtype: Dtype | None = None
+    param_sharding: OutShardingType = None
+    out_sharding: OutShardingType = None
+
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
         frozen=True,
@@ -134,7 +138,7 @@ LayerLike = Annotated[LayerBase, BeforeValidator(to_layer)]
 
 
 class Learner(LayerBase):
-    loss_fn: Callable[[PyTree, PyTree], Array]
+    loss_fn: Callable[[PyTree, PyTree], Any]
     model: LayerBase
     agg: Callable = jnp.mean
     feature_name: str = "feature"
@@ -154,7 +158,7 @@ class Trainer(LayerBase):
     optimizer: Any
 
     def state(self, rng: PRNG) -> State:
-        return State(optimizer=None, step=0, loss=0.0)
+        return State(optimizer=None, loss=0.0)
 
     @dispatch
     def init(
@@ -165,11 +169,9 @@ class Trainer(LayerBase):
 
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         loss, state = self.learner(x, p["learner"], s["learner"])
-        return loss, State(
-            learner=state, optimizer=s["optimizer"], step=s["step"] + 1, loss=loss
-        )
+        return loss, State(learner=state, optimizer=s["optimizer"], loss=loss)
 
-    @partial(jit, static_argnums=0)
+    @partial(jit, static_argnums=0, donate_argnames=("p", "s"))
     def forward_and_backward(
         self, x: PyTree, p: Param, s: State
     ) -> tuple[Param, State]:
@@ -178,5 +180,6 @@ class Trainer(LayerBase):
         P = optax.apply_updates(p, updates)
         return P, S
 
+    @dispatch
     def __call__(self, x: PyTree, p: Param, s: State) -> tuple[Param, State]:
         return self.forward_and_backward(x, p, s)
