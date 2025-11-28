@@ -62,7 +62,7 @@ class LossLogger(ObserverBase):
     def __call__(self, x, p: Param, s: State):
         loss = s["trainer"]["loss"]
         step = s["step"]
-        jax.debug.print(f"Step {step}: loss={{loss}}", loss=loss)
+        jax.debug.print("Step {step}: loss={loss}", step=step, loss=loss)
 
 
 class StepTimeLogger(ObserverBase):
