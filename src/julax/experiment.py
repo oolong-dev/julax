@@ -40,7 +40,7 @@ class Experiment(LayerBase):
     def save(self, p: Param, s: State):
         if self.checkpoint_manager:
             self.checkpoint_manager.save(
-                s["trainer"]["step"],
+                s["step"],
                 args=ocp.args.Composite(
                     param=ocp.args.PyTreeSave(item=p),
                     state_trainer=ocp.args.PyTreeSave(item=s["trainer"]),
