@@ -206,7 +206,7 @@ class Embedding(LayerBase):
 
 class Unembedding(Embedding):
     def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
-        return jnp.einsum("bld,dn->bln", x, p["w"]), s
+        return jnp.einsum("bld,dn->bln", x, p["w"], out_sharding=self.out_sharding), s
 
 
 class LayerNorm(LayerBase):
