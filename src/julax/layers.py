@@ -12,7 +12,7 @@ from jax.nn.initializers import (
     variance_scaling,
 )
 
-from julax.base import Dtype
+from julax.base import Dtype, OutShardingType
 
 from .core import PRNG, LayerBase, LayerLike, PyTree, Param, State, dispatch
 
@@ -119,6 +119,10 @@ class Linear(LayerBase):
     w_init: Initializer = lecun_normal()
     b_init: None | Initializer = zeros
 
+    param_dtype: Dtype | None = None
+    param_sharding: OutShardingType = None
+    out_sharding: OutShardingType = None
+
     def param(self, rng: PRNG) -> Param:
         rng_w, rng_b = jax.random.split(rng)
         return Param(
@@ -192,6 +196,10 @@ class Embedding(LayerBase):
     out_dim: int
     w_init: Initializer = variance_scaling(1.0, "fan_in", "normal", out_axis=0)
 
+    param_dtype: Dtype | None = None
+    param_sharding: OutShardingType = None
+    out_sharding: OutShardingType = None
+
     def param(self, rng: PRNG) -> Param:
         return Param(
             w=self.w_init(
@@ -256,6 +264,10 @@ class LayerNorm(LayerBase):
     w_init: Initializer = ones
     b_init: Initializer = zeros
     compute_dtype: Dtype | None = None
+
+    param_dtype: Dtype | None = None
+    param_sharding: OutShardingType = None
+    out_sharding: OutShardingType = None
 
     def param(self, rng: PRNG) -> Param:
         w_rng, b_rng = jax.random.split(rng)
