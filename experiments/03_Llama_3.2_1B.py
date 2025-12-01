@@ -1,8 +1,6 @@
 # /// script
 # dependencies = [
 #   "julax",
-#   "requests",
-#   "numpy",
 # ]
 #
 # [tool.uv.sources]
