@@ -39,3 +39,9 @@ ignore = ["E741", "F811"]
 [[tool.uv.index]]
 url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 default = true
+
+[dependency-groups]
+dev = [
+    "pyarrow>=22.0.0",
+    "tiktoken>=0.12.0",
+]
