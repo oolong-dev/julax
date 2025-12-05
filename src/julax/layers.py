@@ -39,19 +39,30 @@ class SkipConnection(LayerBase):
         return self.connection(o, x), S
 
 
-class Repeated(LayerBase):
+class Repeat(LayerBase):
     n: int
     layer: LayerLike
 
     def sublayers(self) -> dict:
         return {f"layer_{i}": self.layer for i in range(self.n)}
 
+    @dispatch
+    def init(self, rng: PRNG) -> tuple[Param, State]:
+        def scan_init(carry, rng):
+            p, s = self.layer.init(rng)
+            return carry, (p, s)
+
+        rngs = jax.random.split(rng, self.n)
+        _, (P, S) = jax.lax.scan(scan_init, None, rngs)
+        return P, S
+
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
-        S = State()
-        o = x
-        for i in range(self.n):
-            o, S[f"layer_{i}"] = self.layer(o, p[f"layer_{i}"], s[f"layer_{i}"])
-        return o, S
+        def scan_forward(x, ps):
+            return self.layer(x, *ps)
+
+        o, s = jax.lax.scan(scan_forward, x, (p, s))
+
+        return o, s
 
 
 class NamedLayers(LayerBase):
