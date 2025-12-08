@@ -446,6 +446,7 @@ tpu = [
 [package.dev-dependencies]
 dev = [
     { name = "pyarrow" },
+    { name = "pytest" },
     { name = "tiktoken" },
 ]
 
@@ -467,6 +468,7 @@ provides-extras = ["dev", "tpu"]
 [package.metadata.requires-dev]
 dev = [
     { name = "pyarrow", specifier = ">=22.0.0" },
+    { name = "pytest", specifier = ">=8.4.2" },
     { name = "tiktoken", specifier = ">=0.12.0" },
 ]
 

@@ -29,7 +29,7 @@ def to_layer(x: Callable):
     return F(f=x)
 
 
-class SkipConnection(LayerBase):
+class Residual(LayerBase):
     layer: LayerLike
     connection: Callable = jnp.add
 
@@ -101,8 +101,7 @@ class Branch(NamedLayers):
         S = State()
         for name, layer in zip(self.names, self.layers):
             O[name], S[name] = layer(x, p[name], s[name])
-        # ??? return dict?
-        return tuple(O.values()), S
+        return O, S
 
 
 class Parallel(NamedLayers):
@@ -117,8 +116,7 @@ class Parallel(NamedLayers):
         S = State()
         for name, layer, xᵢ in zip(self.names, self.layers, x):
             O[name], S[name] = layer(xᵢ, p[name], s[name])
-        # ??? return dict?
-        return tuple(O.values()), S
+        return O, S
 
 
 #####
@@ -224,6 +222,9 @@ class Embedding(LayerBase):
     def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
         return p["w"].at[x].get(out_sharding=self.out_sharding), s
 
+    def attend(self, x: Array, p: Param, s: State) -> Array:
+        return jnp.einsum("...ld,nd->...ln", x, p["w"], out_sharding=self.out_sharding)
+
 
 class RotaryEmbedding(LayerBase):
     """Rotary Position Embedding."""
@@ -287,7 +288,7 @@ class LayerNorm(LayerBase):
                 w_rng,
                 (self.dim,),
                 dtype=self.param_dtype,
-                out_sharding=self.out_sharding,
+                out_sharding=self.param_sharding,
             ),
             b=self.b_init(
                 b_rng,
@@ -303,4 +304,56 @@ class LayerNorm(LayerBase):
         x_std = jax.nn.standardize(
             x.astype(self.compute_dtype), epsilon=self.epsilon
         ).astype(self.param_dtype)
-        return x_std * p["w"] + p["b"], s
+        o = x_std * p["w"] + p["b"]
+        if self.out_sharding is not None:
+            o = jax.lax.with_sharding_constraint(o, self.out_sharding)
+        return o, s
+
+
+class RMSNorm(LayerBase):
+    dim: int
+    epsilon: float = 1e-8
+    zero_center: bool = False
+    scale_init: Initializer | None = None
+    scale_dtype: Dtype | None = None
+    scale_sharding: OutShardingType = None
+
+    dtype: Dtype = jnp.float32
+    param_sharding: OutShardingType = None
+    out_sharding: OutShardingType = None
+
+    def param(self, rng: PRNG) -> Param:
+        if self.scale_init is None:
+            return Param()
+        else:
+            return Param(
+                scale=self.scale_init(
+                    rng,
+                    (self.dim,),
+                    dtype=self.scale_dtype,
+                    out_sharding=(
+                        None
+                        if self.param_sharding is None
+                        else P(self.param_sharding[-1])
+                    ),
+                )
+            )
+
+    def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
+        x_dtype = x.dtype
+
+        x = x.astype(self.dtype)
+        rms = jax.lax.rsqrt(
+            jnp.mean(jnp.square(x), axis=-1, keepdims=True) + self.epsilon
+        )
+
+        if self.zero_center:
+            x = x - x.mean(axis=-1, keepdims=True)
+
+        o = (x * rms).astype(x_dtype)
+
+        if self.scale_init is not None:
+            o = o * p["scale"]
+        if self.out_sharding is not None:
+            o = jax.lax.with_sharding_constraint(o, self.out_sharding)
+        return o, s

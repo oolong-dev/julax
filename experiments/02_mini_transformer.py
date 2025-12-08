@@ -26,7 +26,7 @@ from julax.layers import (
     Parallel,
     Repeat,
     RotaryEmbedding,
-    SkipConnection,
+    Residual,
     Embedding,
     Unembedding,
 )
@@ -78,7 +78,7 @@ def main(
                     blocks=Repeat(
                         n=num_layers,
                         layer=Chain(
-                            attn=SkipConnection(
+                            attn=Residual(
                                 layer=Chain(
                                     norm_attn=LayerNorm(dim=dim),
                                     attn=Chain(
@@ -130,7 +130,7 @@ def main(
                                     ),
                                 )
                             ),
-                            mlp=SkipConnection(
+                            mlp=Residual(
                                 layer=Chain(
                                     norm_mlp=LayerNorm(dim=dim),
                                     mlp=Chain(

@@ -16,6 +16,9 @@ import pickle
 
 import numpy as np
 
+from julax.core import LayerBase
+from julax.layers import Embedding, RMSNorm, Repeat
+
 
 class Tokenize(FlatMapTransform):
     def __init__(self, tokenizer_path: str) -> None:
@@ -29,6 +32,30 @@ class Tokenize(FlatMapTransform):
 
     def flat_map(self, element):
         return self.encode(element)
+
+    def get_position_ids(self, tokens: np.ndarray):
+        assert tokens.ndim == 2
+        batch_size, seq_len = tokens.shape
+
+        bos_mask = tokens == self.bos_token_id
+        bos_mask[:, 0] = False
+
+        offsets = np.zeros_like(tokens)
+        bos_indices = np.nonzero(bos_mask)
+        if len(bos_indices) == 2:
+            offsets[bos_mask] = bos_indices[1]
+        offsets = np.maximum.accumulate(offsets, axis=1)
+
+        global_indices = np.arange(seq_len)
+        position_ids = global_indices - offsets
+
+        # TODO: document mask, a bit slow
+        # segment_ids = np.cumsum(bos_mask, axis=1)
+        # block_mask = segment_ids[:, :, None] == segment_ids[:, None, :]
+        # causal_mask = np.tril(np.ones((tokens.shape[1], tokens.shape[1]), dtype=bool))
+        # mask = block_mask & causal_mask
+
+        return position_ids
 
 
 def create_dataset(
@@ -62,7 +89,12 @@ def create_dataset(
             .map(np.array)
             .map(
                 lambda x: {
-                    "input_ids": x[:-1].reshape(batch_size, seq_len),
+                    "inputs": {
+                        "token_ids": x[:-1].reshape(batch_size, seq_len),
+                        "position_ids": tokenize.get_position_ids(
+                            x[:-1].reshape(batch_size, seq_len)
+                        ),
+                    },
                     "target_labels": x[1:].reshape(batch_size, seq_len),
                 }
             )
@@ -73,3 +105,9 @@ def create_dataset(
     return ds.mp_prefetch(
         grain.MultiprocessingOptions(num_workers=4, per_worker_buffer_size=1)
     )
+
+
+class Transformer(LayerBase):
+    emb: Embedding
+    blocks: Repeat
+    out_norm: RMSNorm

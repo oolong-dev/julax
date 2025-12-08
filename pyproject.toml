@@ -25,10 +25,6 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.3.2",
-    "pytest-cov>=5.0.0",
-]
 tpu = [
     "jax[tpu]>=0.7.2",
 ]
@@ -43,5 +39,6 @@ default = true
 [dependency-groups]
 dev = [
     "pyarrow>=22.0.0",
+    "pytest>=8.4.2",
     "tiktoken>=0.12.0",
 ]
