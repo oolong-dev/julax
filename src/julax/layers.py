@@ -1,20 +1,15 @@
 from typing import Callable
 
 import jax
-from jax import Array
-from jax.sharding import PartitionSpec as P
 import jax.numpy as jnp
-from jax.nn.initializers import (
-    Initializer,
-    lecun_normal,
-    ones,
-    zeros,
-    variance_scaling,
-)
+from jax import Array
+from jax.nn.initializers import Initializer, lecun_normal, ones, variance_scaling, zeros
+from jax.sharding import PartitionSpec as P
 
 from julax.base import Dtype, OutShardingType
+from julax.utils import identity
 
-from .core import PRNG, LayerBase, LayerLike, PyTree, Param, State, dispatch
+from .core import PRNG, LayerBase, LayerLike, Param, PyTree, State, dispatch
 
 
 class F(LayerBase):
@@ -29,14 +24,18 @@ def to_layer(x: Callable):
     return F(f=x)
 
 
-class Residual(LayerBase):
-    layer: LayerLike
-    connection: Callable = jnp.add
+# TODO: generalize to select subtree
+class Select(LayerBase):
+    key: int | str
 
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
-        S = State()
-        o, S["layer"] = self.layer(x, p["layer"], s["layer"])
-        return self.connection(o, x), S
+        match self.key:
+            case int(k):
+                return x[k], s
+            case str(k):
+                return getattr(x, k), s
+            case _:
+                raise ValueError(f"Unsupported key type: {type(self.key)}")
 
 
 class Repeat(LayerBase):
@@ -69,18 +68,15 @@ class NamedLayers(LayerBase):
     names: tuple[str, ...]
     layers: tuple[LayerLike, ...]
 
-    def __init__(self, *args, **kwargs):
-        names = tuple(f"layer_{i}" for i in range(len(args))) + tuple(kwargs.keys())
-        layers = tuple(args) + tuple(kwargs.values())
-        super().__init__(names=names, layers=layers)
-
     def sublayers(self) -> dict:
         return {k: v for k, v in zip(self.names, self.layers)}
 
 
 class Chain(NamedLayers):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        names = tuple(f"layer_{i}" for i in range(len(args))) + tuple(kwargs.keys())
+        layers = tuple(args) + tuple(kwargs.values())
+        super().__init__(names=names, layers=layers)
 
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         h = x
@@ -93,20 +89,36 @@ class Chain(NamedLayers):
 class Branch(NamedLayers):
     """1 -> N"""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    reduce: Callable | None = None
+
+    def __init__(self, *args, reduce: Callable | None = None, **kwargs):
+        names = tuple(f"layer_{i}" for i in range(len(args))) + tuple(kwargs.keys())
+        layers = tuple(args) + tuple(kwargs.values())
+        super().__init__(names=names, layers=layers, reduce=reduce)
 
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         O = {}
         S = State()
         for name, layer in zip(self.names, self.layers):
             O[name], S[name] = layer(x, p[name], s[name])
+        if self.reduce is not None:
+            O = self.reduce(**O)
         return O, S
 
 
-class Parallel(NamedLayers):
+class Residual(Branch):
+    def __init__(self, processor, *, skip_through=identity, reduce: Callable = jnp.add):
+        super().__init__(
+            processor=processor,
+            skip_through=skip_through,
+            reduce=reduce,
+        )
+
+
+class Parallel(Branch):
     """N -> N"""
 
+    # place holder to bypass link check
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -116,6 +128,8 @@ class Parallel(NamedLayers):
         S = State()
         for name, layer, xᵢ in zip(self.names, self.layers, x):
             O[name], S[name] = layer(xᵢ, p[name], s[name])
+        if self.reduce is not None:
+            O = self.reduce(**O)
         return O, S
 
 
@@ -222,7 +236,7 @@ class Embedding(LayerBase):
     def forward(self, x: Array, p: Param, s: State) -> tuple[Array, State]:
         return p["w"].at[x].get(out_sharding=self.out_sharding), s
 
-    def attend(self, x: Array, p: Param, s: State) -> Array:
+    def attend(self, x: Array, p: Param) -> Array:
         return jnp.einsum("...ld,nd->...ln", x, p["w"], out_sharding=self.out_sharding)
 
 

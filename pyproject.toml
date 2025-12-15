@@ -40,5 +40,6 @@ default = true
 dev = [
     "pyarrow>=22.0.0",
     "pytest>=8.4.2",
+    "tensorflow-datasets>=4.9.9",
     "tiktoken>=0.12.0",
 ]

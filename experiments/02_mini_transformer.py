@@ -10,24 +10,26 @@
 # Reproduce https://sdbuchanan.com/blog/jax-2/
 
 from functools import partial
+
 import grain
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
 from jax.nn.initializers import truncated_normal
+
 from julax.core import Learner, Trainer
 from julax.einops import Rearrange
 from julax.experiment import Experiment
 from julax.layers import (
     Chain,
-    Linear,
+    Embedding,
     LayerNorm,
+    Linear,
     Parallel,
     Repeat,
-    RotaryEmbedding,
     Residual,
-    Embedding,
+    RotaryEmbedding,
     Unembedding,
 )
 from julax.observers import default_observer
@@ -79,7 +81,7 @@ def main(
                         n=num_layers,
                         layer=Chain(
                             attn=Residual(
-                                layer=Chain(
+                                processor=Chain(
                                     norm_attn=LayerNorm(dim=dim),
                                     attn=Chain(
                                         # qkv projection
@@ -131,7 +133,7 @@ def main(
                                 )
                             ),
                             mlp=Residual(
-                                layer=Chain(
+                                processor=Chain(
                                     norm_mlp=LayerNorm(dim=dim),
                                     mlp=Chain(
                                         up=Linear(
@@ -175,5 +177,7 @@ def main(
 
 
 x = main()
+x.run()
+x.close()
 x.run()
 x.close()
