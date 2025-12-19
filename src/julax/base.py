@@ -32,6 +32,9 @@ class FrozenDict(RootModel[dict]):
     def items(self):
         return self.root.items()
 
+    def __len__(self):
+        return len(self.root)
+
     def __hash__(self):
         return hash(frozenset(self.root.items()))
 
