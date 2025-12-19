@@ -10,6 +10,7 @@
 
 import os
 import pickle
+from safetensors import safe_open
 
 import grain
 import jax
@@ -62,22 +63,6 @@ def apply_rotary_emb(
         raise ValueError(
             "Input is assumed to be a rank 4 tensor of shape [B, S, N, H]."
         )
-    embedding_dims = inputs.shape[3]
-
-    # Shift the inputs left and right as per LLaMA's specific behavior
-    inputs_shifted_left = jnp.concatenate([inputs[..., 1:], inputs[..., :1]], axis=-1)
-    inputs_shifted_right = jnp.concatenate(
-        [inputs[..., -1:], inputs[..., :-1]], axis=-1
-    )
-    inputs_shifted = jax.lax.select(
-        jnp.tile(
-            jnp.mod(jnp.arange(embedding_dims, dtype=jnp.int32), 2),
-            inputs.shape[:-1] + (1,),
-        ),
-        inputs_shifted_right,
-        inputs_shifted_left,
-    )
-
     # Determine positions if not provided
     if position is None:
         seq_length = inputs.shape[1]
@@ -90,30 +75,21 @@ def apply_rotary_emb(
     sin = jnp.sin(sinusoid_inp)
     cos = jnp.cos(sinusoid_inp)
 
-    # Apply alternating sign
-    sign = jnp.tile(jnp.array([-1, 1]), embedding_dims // 2)
-
-    # Combine original inputs with sinusoidal information
-    outputs = inputs * cos + inputs_shifted * sin * sign
+    r, i = jnp.split(inputs, 2, axis=-1)
+    pos_r = cos * r - sin * i
+    pos_i = sin * r + cos * i
+    outputs = jnp.concatenate([pos_r, pos_i], axis=-1)
 
     if fprop_dtype:
         outputs = outputs.astype(fprop_dtype)
-
-    # sin, cos = jnp.split(sinusoidal_pos, 2, axis=-1)
-    # sin_pos = jnp.reshape(jnp.stack([sin, sin], axis=-1), sinusoidal_pos.shape)
-    # cos_pos = jnp.reshape(jnp.stack([cos, cos], axis=-1), sinusoidal_pos.shape)
-    # rotate_half_inputs = jnp.reshape(
-    #     jnp.stack([-inputs[..., 1::2], inputs[..., ::2]], axis=-1), inputs.shape
-    # )
-    # output = inputs * cos_pos + rotate_half_inputs * sin_pos
 
     return outputs
 
 
 class LLaMARotaryEmbedding(LayerBase):
     embedding_dims: int
-    min_timescale: int
-    max_timescale: int
+    min_timescale: int = 1
+    max_timescale: int = 10_000
     cast_as_fprop_dtype: bool = True
     fprop_dtype: Dtype = jnp.bfloat16
 
@@ -157,7 +133,6 @@ class LLaMARotaryEmbedding(LayerBase):
     def state(self, rng) -> State:
         half_embedding_dim = self.embedding_dims // 2
         fraction = 2 * jnp.arange(0, half_embedding_dim) / self.embedding_dims
-        fraction = jnp.repeat(fraction, 2)
         timescale = (
             self.min_timescale * (self.max_timescale / self.min_timescale) ** fraction
         )
@@ -245,87 +220,11 @@ def create_dataset(
 
 
 def attention(qkv, timescale):
-    q, k, v = qkv
+    q, k, v = qkv.values()
     q = apply_rotary_emb(q, timescale)
     k = apply_rotary_emb(k, timescale)
     o = jax.nn.dot_product_attention(q, k, v, is_causal=True)
     return o
-
-
-def transformer_block(
-    batch_size, seq_len, dim, num_q_heads, num_kv_heads, head_dim, ffn_hidden_dim
-):
-    Branch(  # {hidden(in), timescale} => {hidden(out), timescale}
-        hidden=Chain(
-            attn=Residual(
-                processor=Chain(
-                    Parallel(
-                        qkv=Chain(
-                            norm=RMSNorm(dim=dim),
-                            qkv_proj=Branch(
-                                q=Chain(
-                                    Linear(in_dim=dim, out_dim=num_q_heads * head_dim),
-                                    Rearrange(
-                                        "B T (N H) -> B T N H",
-                                        B=batch_size,
-                                        T=seq_len,
-                                        N=num_q_heads,
-                                        H=head_dim,
-                                    ),
-                                ),
-                                k=Chain(
-                                    Linear(in_dim=dim, out_dim=num_kv_heads * head_dim),
-                                    Rearrange(
-                                        "B S (K H) -> B S K H",
-                                        B=batch_size,
-                                        S=seq_len,
-                                        K=num_kv_heads,
-                                        H=head_dim,
-                                    ),
-                                ),
-                                v=Chain(
-                                    Linear(in_dim=dim, out_dim=num_kv_heads * head_dim),
-                                    Rearrange(
-                                        "B S (K H) -> B S K H",
-                                        B=batch_size,
-                                        S=seq_len,
-                                        K=num_kv_heads,
-                                        H=head_dim,
-                                    ),
-                                ),
-                            ),
-                        ),
-                        timescale=identity,
-                        reduce=attention,
-                    ),
-                    Rearrange(
-                        "B T N H -> B T (N H)",
-                        B=batch_size,
-                        T=seq_len,
-                        N=num_q_heads,
-                        H=head_dim,
-                    ),
-                    Linear(in_dim=dim, out_dim=dim),
-                ),
-                skip_through=Select(key="hidden"),
-            ),
-            ffn=Residual(
-                Chain(
-                    norm=RMSNorm(dim=dim),
-                    up=Branch(
-                        up_proj=Linear(in_dim=dim, out_dim=ffn_hidden_dim),
-                        gate_proj=Chain(
-                            proj=Linear(in_dim=dim, out_dim=ffn_hidden_dim),
-                            activation=jax.nn.silu,
-                        ),
-                        reduce=jnp.multiply,
-                    ),
-                    down=Linear(in_dim=ffn_hidden_dim, out_dim=dim),
-                )
-            ),
-        ),
-        timescale=Select(key="timescale"),
-    )
 
 
 class Transformer(LayerBase):
@@ -342,8 +241,200 @@ class Transformer(LayerBase):
         h, S["blocks"] = self.blocks(
             {"hidden": h, "timescale": s["rope"]["timescale"]}, p["blocks"], s["blocks"]
         )
-        h, S["out_norm"] = self.out_norm(h, p["out_norm"], s["out_norm"])
+        h, S["out_norm"] = self.out_norm(h["hidden"], p["out_norm"], s["out_norm"])
 
         o = self.emb.attend(h, p["emb"])
 
         return o, S
+
+
+def create_transformer(
+    batch_size=1,
+    seq_len=10,
+    dim=2048,
+    num_q_heads=32,
+    num_kv_heads=8,
+    head_dim=64,
+    ffn_hidden_dim=8192,
+    vocab_size=128256,
+) -> Transformer:
+    return Transformer(
+        emb=Embedding(in_dim=vocab_size, out_dim=dim, param_dtype=jnp.bfloat16),
+        rope=LLaMARotaryEmbedding(
+            embedding_dims=head_dim,
+            min_timescale=1,
+            max_timescale=500_000,
+        ),
+        out_norm=RMSNorm(dim=dim, eps=1e-05, scale_dtype=jnp.bfloat16),
+        blocks=Repeat(
+            n=16,
+            layer=Branch(  # {hidden(in), timescale} => {hidden(out), timescale}
+                hidden=Chain(
+                    attn=Residual(
+                        Chain(
+                            Parallel(
+                                qkv=Chain(
+                                    norm=RMSNorm(dim=dim, eps=1e-05),
+                                    qkv_proj=Branch(
+                                        q=Chain(
+                                            Linear(
+                                                in_dim=dim,
+                                                out_dim=num_q_heads * head_dim,
+                                                param_dtype=jnp.bfloat16,
+                                            ),
+                                            Rearrange(
+                                                "B T (N H) -> B T N H",
+                                                B=batch_size,
+                                                T=seq_len,
+                                                N=num_q_heads,
+                                                H=head_dim,
+                                            ),
+                                        ),
+                                        k=Chain(
+                                            Linear(
+                                                in_dim=dim,
+                                                out_dim=num_kv_heads * head_dim,
+                                                param_dtype=jnp.bfloat16,
+                                            ),
+                                            Rearrange(
+                                                "B S (K H) -> B S K H",
+                                                B=batch_size,
+                                                S=seq_len,
+                                                K=num_kv_heads,
+                                                H=head_dim,
+                                            ),
+                                        ),
+                                        v=Chain(
+                                            Linear(
+                                                in_dim=dim,
+                                                out_dim=num_kv_heads * head_dim,
+                                                param_dtype=jnp.bfloat16,
+                                            ),
+                                            Rearrange(
+                                                "B S (K H) -> B S K H",
+                                                B=batch_size,
+                                                S=seq_len,
+                                                K=num_kv_heads,
+                                                H=head_dim,
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                                timescale=identity,
+                                reduce=attention,
+                            ),
+                            Rearrange(
+                                "B T N H -> B T (N H)",
+                                B=batch_size,
+                                T=seq_len,
+                                N=num_q_heads,
+                                H=head_dim,
+                            ),
+                            Linear(
+                                in_dim=dim,
+                                out_dim=dim,
+                                param_dtype=jnp.bfloat16,
+                            ),
+                        ),
+                        skip_through=Select(key="hidden"),
+                    ),
+                    ffn=Residual(
+                        Chain(
+                            norm=RMSNorm(dim=dim, eps=1e-05),
+                            up=Branch(
+                                # up_proj
+                                Linear(
+                                    in_dim=dim,
+                                    out_dim=ffn_hidden_dim,
+                                    param_dtype=jnp.bfloat16,
+                                ),
+                                # gate_proj
+                                Chain(
+                                    proj=Linear(
+                                        in_dim=dim,
+                                        out_dim=ffn_hidden_dim,
+                                        param_dtype=jnp.bfloat16,
+                                    ),
+                                    activation=jax.nn.silu,
+                                ),
+                                reduce=jnp.multiply,
+                            ),
+                            down=Linear(
+                                in_dim=ffn_hidden_dim,
+                                out_dim=dim,
+                                param_dtype=jnp.bfloat16,
+                            ),
+                        )
+                    ),
+                ),
+                timescale=Select(key="timescale"),
+            ),
+        ),
+    )
+
+
+def from_hf():
+    tensors = {}
+    with safe_open(
+        "models/Llama-3.2-1B-Instruct/model.safetensors", framework="flax", device="cpu"
+    ) as f:
+        for key in f.keys():
+            tensors[key] = f.get_tensor(key)
+    return tensors
+
+
+def verify():
+    m = create_transformer()
+    p, s = m.init()
+
+    tensors = from_hf()
+    input_ids = jnp.array([[128000, 791, 6367, 311, 28915, 264, 1695, 19692, 374, 220]])
+    p, s = m.init()
+
+    w_ln1 = []
+    w_q = []
+    w_k = []
+    w_v = []
+    w_o = []
+    w_ln2 = []
+    w_up = []
+    w_gate = []
+    w_down = []
+
+    for i in range(16):
+        w_ln1.append(tensors[f"model.layers.{i}.input_layernorm.weight"])
+        w_q.append(tensors[f"model.layers.{i}.self_attn.q_proj.weight"].T)
+        w_k.append(tensors[f"model.layers.{i}.self_attn.k_proj.weight"].T)
+        w_v.append(tensors[f"model.layers.{i}.self_attn.v_proj.weight"].T)
+        w_o.append(tensors[f"model.layers.{i}.self_attn.o_proj.weight"].T)
+
+        w_ln2.append(tensors[f"model.layers.{i}.post_attention_layernorm.weight"])
+        w_up.append(tensors[f"model.layers.{i}.mlp.up_proj.weight"].T)
+        w_gate.append(tensors[f"model.layers.{i}.mlp.gate_proj.weight"].T)
+        w_down.append(tensors[f"model.layers.{i}.mlp.down_proj.weight"].T)
+
+    p["blocks"]["hidden"]["attn"]["#0"]["#0"]["qkv"]["norm"]["scale"] = jnp.stack(
+        w_ln1, axis=0
+    )
+    p["blocks"]["hidden"]["attn"]["#0"]["#0"]["qkv"]["qkv_proj"]["q"]["#0"]["w"] = (
+        jnp.stack(w_q, axis=0)
+    )
+    p["blocks"]["hidden"]["attn"]["#0"]["#0"]["qkv"]["qkv_proj"]["k"]["#0"]["w"] = (
+        jnp.stack(w_k, axis=0)
+    )
+    p["blocks"]["hidden"]["attn"]["#0"]["#0"]["qkv"]["qkv_proj"]["v"]["#0"]["w"] = (
+        jnp.stack(w_v, axis=0)
+    )
+    p["blocks"]["hidden"]["attn"]["#0"]["#2"]["w"] = jnp.stack(w_o, axis=0)
+
+    p["blocks"]["hidden"]["ffn"]["#0"]["norm"]["scale"] = jnp.stack(w_ln2, axis=0)
+    p["blocks"]["hidden"]["ffn"]["#0"]["up"]["#0"]["w"] = jnp.stack(w_up, axis=0)
+    p["blocks"]["hidden"]["ffn"]["#0"]["up"]["#1"]["proj"]["w"] = jnp.stack(
+        w_gate, axis=0
+    )
+    p["blocks"]["hidden"]["ffn"]["#0"]["down"]["w"] = jnp.stack(w_down, axis=0)
+
+    p["emb"]["w"] = tensors["model.embed_tokens.weight"]
+    p["out_norm"]["scale"] = tensors["model.norm.weight"]
+
+    return m({"token_ids": input_ids}, p, s)

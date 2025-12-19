@@ -179,5 +179,3 @@ def main(
 x = main()
 x.run()
 x.close()
-x.run()
-x.close()

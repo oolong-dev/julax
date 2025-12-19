@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "einops>=0.8.1",
     "grain>=0.2.12",
+    "humanize>=4.13.0",
     "jax>=0.7.2",
     "optax>=0.2.6",
     "orbax-checkpoint>=0.11.25",
@@ -40,6 +41,7 @@ default = true
 dev = [
     "pyarrow>=22.0.0",
     "pytest>=8.4.2",
+    "safetensors>=0.7.0",
     "tensorflow-datasets>=4.9.9",
     "tiktoken>=0.12.0",
 ]
