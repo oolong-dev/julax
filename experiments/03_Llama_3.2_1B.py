@@ -10,6 +10,7 @@
 
 import os
 import pickle
+import optax
 from safetensors import safe_open
 
 import grain
@@ -21,8 +22,9 @@ from grain.experimental import FlatMapIterDataset, FlatMapTransform, ParquetIter
 from jax import Array
 
 from julax.base import Dtype
-from julax.core import LayerBase, Param, State
+from julax.core import LayerBase, Learner, Param, State, Trainer
 from julax.einops import Rearrange
+from julax.experiment import Experiment
 from julax.layers import (
     Branch,
     Chain,
@@ -34,6 +36,7 @@ from julax.layers import (
     RMSNorm,
     Select,
 )
+from julax.observers import default_observer
 from julax.utils import identity
 
 
@@ -373,23 +376,13 @@ def create_transformer(
     )
 
 
-def from_hf():
+def from_hf(p, s):
     tensors = {}
     with safe_open(
         "models/Llama-3.2-1B-Instruct/model.safetensors", framework="flax", device="cpu"
     ) as f:
         for key in f.keys():
             tensors[key] = f.get_tensor(key)
-    return tensors
-
-
-def verify():
-    m = create_transformer()
-    p, s = m.init()
-
-    tensors = from_hf()
-    input_ids = jnp.array([[128000, 791, 6367, 311, 28915, 264, 1695, 19692, 374, 220]])
-    p, s = m.init()
 
     w_ln1 = []
     w_q = []
@@ -437,4 +430,54 @@ def verify():
     p["emb"]["w"] = tensors["model.embed_tokens.weight"]
     p["out_norm"]["scale"] = tensors["model.norm.weight"]
 
-    return m({"token_ids": input_ids}, p, s)
+    return p, s
+
+
+def verify():
+    m = create_transformer()
+    p, s = from_hf(*m.init())
+    input_ids = jnp.array([[128000, 791, 6367, 311, 28915, 264, 1695, 19692, 374, 220]])
+    p, s = m.init()
+    o, _ = m({"token_ids": input_ids}, p, s)
+    assert o[0][0].argmax().item() == 16309
+
+
+def create_experiment():
+    return Experiment(
+        name="llama_3.2_1b",
+        max_steps=1000,
+        trainer=Trainer(
+            learner=Learner(
+                feature_name="inputs",
+                label_name="target_labels",
+                model=create_transformer(),
+                loss_fn=optax.softmax_cross_entropy_with_integer_labels,
+            ),
+            optimizer=optax.chain(
+                optax.clip_by_global_norm(1.0),
+                optax.scale_by_adam(
+                    b1=0.9,
+                    b2=0.95,
+                    eps=1e-8,
+                ),
+                optax.add_decayed_weights(0.1),
+                optax.scale_by_schedule(
+                    optax.warmup_cosine_decay_schedule(
+                        init_value=0.0,
+                        peak_value=0.0005,
+                        warmup_steps=2_000,
+                        decay_steps=30_000,
+                        end_value=5.0e-05,
+                    )
+                ),
+                optax.scale(-1.0),
+            ),
+        ),
+        dataset=create_dataset(
+            batch_size=4,
+            seq_len=4096,
+            data_dir="data/wikipedia_parquet",
+            tokenizer_path="models/llama_tokenizer.pkl",
+        ),
+        observer=default_observer(),
+    )

@@ -25,6 +25,8 @@ class Experiment(LayerBase):
     trainer: Trainer
 
     dataset: grain.IterDataset
+
+    max_steps: int | None = None
     batch_axis_names: list[str] = ["data"]
     mesh_shape: dict[str, int] = {"data": -1}
 
@@ -97,6 +99,8 @@ class Experiment(LayerBase):
             self.observer(self, p, s)
 
             for x_local in s["input"]:
+                if self.max_steps is not None and s["step"] >= self.max_steps:
+                    break
                 x = jax.make_array_from_process_local_data(
                     sharding=jax.sharding.NamedSharding(
                         mesh, PartitionSpec(self.batch_axis_names)
