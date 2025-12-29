@@ -30,7 +30,6 @@ from julax.layers import (
     Repeat,
     Residual,
     RotaryEmbedding,
-    Unembedding,
 )
 from julax.observers import default_observer
 from julax.utils import identity
@@ -103,18 +102,19 @@ def main(
                                             jnp.split, indices_or_sections=3, axis=2
                                         ),
                                         Parallel(
-                                            RotaryEmbedding(
+                                            query=RotaryEmbedding(
                                                 embedding_dims=head_dim,
                                                 fprop_dtype=jnp.float32,
                                             ),
-                                            RotaryEmbedding(
+                                            key=RotaryEmbedding(
                                                 embedding_dims=head_dim,
                                                 fprop_dtype=jnp.float32,
                                             ),
-                                            identity,
-                                        ),
-                                        lambda qkv: jax.nn.dot_product_attention(
-                                            *qkv, is_causal=True
+                                            value=identity,
+                                            reduce=partial(
+                                                jax.nn.dot_product_attention,
+                                                is_causal=True,
+                                            ),
                                         ),
                                         Rearrange(
                                             "B T N H -> B T (N H)",
@@ -154,7 +154,7 @@ def main(
                             ),
                         ),
                     ),
-                    unemb=Unembedding(
+                    unemb=Linear(
                         in_dim=dim,
                         out_dim=num_vocab,
                         w_init=truncated_normal(stddev=param_std),

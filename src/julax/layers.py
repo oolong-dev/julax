@@ -136,11 +136,18 @@ class Parallel(Branch):
         super().__init__(*args, **kwargs)
 
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
-        assert isinstance(x, dict)
-        assert len(x) == len(self.layers)
+        if isinstance(x, dict):
+            inputs = list(x.values())
+        elif isinstance(x, (list, tuple)):
+            inputs = list(x)
+        else:
+            raise ValueError("Input to Parallel must be a dict, list, or tuple.")
+
+        assert len(inputs) == len(self.layers)
+
         O = {}
         S = State()
-        for name, layer, xᵢ in zip(self.names, self.layers, x.values()):
+        for name, layer, xᵢ in zip(self.names, self.layers, inputs):
             O[name], S[name] = layer(xᵢ, p[name], s[name])
         if self.reduce is not None:
             args = (v for k, v in O.items() if k.startswith("#"))
