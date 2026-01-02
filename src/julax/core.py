@@ -15,7 +15,7 @@ from jax import jit, value_and_grad
 
 #####
 
-from julax.base import PRNG, Dtype, OutShardingType, PyTree, dispatch
+from julax.base import PRNG, PyTree, dispatch
 
 # TODO: use RootModel[dict] for better customization
 # Or maybe SimpleNamespace?
@@ -26,10 +26,6 @@ State: TypeAlias = dict
 
 
 class LayerBase(BaseModel, ABC):
-    param_dtype: Dtype | None = None
-    param_sharding: OutShardingType = None
-    out_sharding: OutShardingType = None
-
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
         frozen=True,
@@ -39,13 +35,6 @@ class LayerBase(BaseModel, ABC):
             optax.GradientTransformation,
         ),
     )
-
-    @classmethod
-    def __pydantic_init_subclass__(cls, **kwargs):
-        # TODO: respect `FieldInfo`
-        jax.tree_util.register_dataclass(
-            cls, data_fields=list(cls.model_fields.keys()), meta_fields=[]
-        )
 
     def sublayers(self) -> dict:
         attrs_flatten, treedef = jax.tree.flatten(
@@ -66,11 +55,36 @@ class LayerBase(BaseModel, ABC):
                 res[k] = v
         return res
 
+    def __getitem__(self, key: str) -> "LayerBase":
+        return self.sublayers()[key]
+
+    def _ipython_display_(self):
+        from julax.pprint import pprint
+
+        pprint(self)
+
     def param(self, rng: PRNG) -> Param:
         return Param()
 
+    def param_length(self) -> int:
+        return 0
+
     def state(self, rng: PRNG) -> State:
         return State()
+
+    def state_length(self) -> int:
+        return 0
+
+    def numel(self) -> tuple[int, int]:
+        num_params = self.param_length()
+        num_states = self.state_length()
+
+        for sublayer in self.sublayers().values():
+            p, s = sublayer.numel()
+            num_params += p
+            num_states += s
+
+        return num_params, num_states
 
     @dispatch
     def init(self, seed: int = 0) -> tuple[Param, State]:
@@ -109,7 +123,10 @@ class LayerBase(BaseModel, ABC):
         assert len(layer_params.keys() & sublayer_params.keys()) == 0
         assert len(layer_states.keys() & sublayer_states.keys()) == 0
 
-        return sublayer_params | layer_params, sublayer_states | layer_states
+        return (
+            sublayer_params | layer_params,
+            sublayer_states | layer_states,
+        )
 
     @abstractmethod
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]: ...
@@ -165,7 +182,10 @@ class Trainer(LayerBase):
         self, layer_params, layer_states, sublayer_params, sublayer_states
     ) -> tuple[Param, State]:
         layer_states["optimizer"] = self.optimizer.init(sublayer_params["learner"])
-        return sublayer_params | layer_params, sublayer_states | layer_states
+        return (
+            sublayer_params | layer_params,
+            sublayer_states | layer_states,
+        )
 
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         loss, state = self.learner(x, p["learner"], s["learner"])

@@ -1,5 +1,6 @@
+from functools import cached_property
 import jax
-from jax.sharding import PartitionSpec
+from jax.sharding import PartitionSpec, Mesh
 
 from julax.utils import create_mesh
 
@@ -10,7 +11,7 @@ import orbax.checkpoint as ocp
 
 import logging
 
-from pydantic import Field
+from pydantic import Field, computed_field
 
 from .observers import default_observer, ObserverBase
 
@@ -24,11 +25,18 @@ class Experiment(LayerBase):
     trainer: Trainer
 
     dataset: grain.IterDataset
+
+    max_steps: int | None = None
     batch_axis_names: list[str] = ["data"]
     mesh_shape: dict[str, int] = {"data": -1}
 
     checkpoint_manager: ocp.CheckpointManager | None = None
     observer: ObserverBase = Field(default_factory=default_observer)
+
+    @computed_field
+    @cached_property
+    def mesh(self) -> Mesh:
+        return create_mesh(self.mesh_shape)
 
     def state(self, rng: PRNG) -> State:
         return State(input=iter(self.dataset), step=0)
@@ -86,11 +94,13 @@ class Experiment(LayerBase):
             self.checkpoint_manager.close()
 
     def run(self) -> tuple[Param, State]:
-        with create_mesh(self.mesh_shape) as mesh:
+        with self.mesh as mesh:
             p, s = self.restore()
             self.observer(self, p, s)
 
             for x_local in s["input"]:
+                if self.max_steps is not None and s["step"] >= self.max_steps:
+                    break
                 x = jax.make_array_from_process_local_data(
                     sharding=jax.sharding.NamedSharding(
                         mesh, PartitionSpec(self.batch_axis_names)

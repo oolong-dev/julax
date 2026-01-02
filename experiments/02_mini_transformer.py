@@ -10,25 +10,26 @@
 # Reproduce https://sdbuchanan.com/blog/jax-2/
 
 from functools import partial
+
 import grain
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
 from jax.nn.initializers import truncated_normal
+
 from julax.core import Learner, Trainer
 from julax.einops import Rearrange
 from julax.experiment import Experiment
 from julax.layers import (
     Chain,
-    Linear,
-    LayerNorm,
-    Parallel,
-    Repeated,
-    RotaryEmbedding,
-    SkipConnection,
     Embedding,
-    Unembedding,
+    LayerNorm,
+    Linear,
+    Parallel,
+    Repeat,
+    Residual,
+    RotaryEmbedding,
 )
 from julax.observers import default_observer
 from julax.utils import identity
@@ -75,11 +76,11 @@ def main(
                         out_dim=dim,
                         w_init=truncated_normal(stddev=param_std),
                     ),
-                    blocks=Repeated(
+                    blocks=Repeat(
                         n=num_layers,
                         layer=Chain(
-                            attn=SkipConnection(
-                                layer=Chain(
+                            attn=Residual(
+                                processor=Chain(
                                     norm_attn=LayerNorm(dim=dim),
                                     attn=Chain(
                                         # qkv projection
@@ -101,18 +102,19 @@ def main(
                                             jnp.split, indices_or_sections=3, axis=2
                                         ),
                                         Parallel(
-                                            RotaryEmbedding(
+                                            query=RotaryEmbedding(
                                                 embedding_dims=head_dim,
                                                 fprop_dtype=jnp.float32,
                                             ),
-                                            RotaryEmbedding(
+                                            key=RotaryEmbedding(
                                                 embedding_dims=head_dim,
                                                 fprop_dtype=jnp.float32,
                                             ),
-                                            identity,
-                                        ),
-                                        lambda qkv: jax.nn.dot_product_attention(
-                                            *qkv, is_causal=True
+                                            value=identity,
+                                            reduce=partial(
+                                                jax.nn.dot_product_attention,
+                                                is_causal=True,
+                                            ),
                                         ),
                                         Rearrange(
                                             "B T N H -> B T (N H)",
@@ -130,8 +132,8 @@ def main(
                                     ),
                                 )
                             ),
-                            mlp=SkipConnection(
-                                layer=Chain(
+                            mlp=Residual(
+                                processor=Chain(
                                     norm_mlp=LayerNorm(dim=dim),
                                     mlp=Chain(
                                         up=Linear(
@@ -152,7 +154,7 @@ def main(
                             ),
                         ),
                     ),
-                    unemb=Unembedding(
+                    unemb=Linear(
                         in_dim=dim,
                         out_dim=num_vocab,
                         w_init=truncated_normal(stddev=param_std),
