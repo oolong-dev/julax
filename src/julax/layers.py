@@ -101,59 +101,82 @@ class Chain(NamedLayers):
         return h, S
 
 
-class Branch(NamedLayers):
+class Branch(Chain):
     """1 -> N"""
 
-    reduce: Callable | None = None
-
-    def __init__(self, *args, reduce: Callable | None = None, **kwargs):
-        names = tuple(f"#{i}" for i in range(len(args))) + tuple(kwargs.keys())
-        layers = tuple(args) + tuple(kwargs.values())
-        super().__init__(names=names, layers=layers, reduce=reduce)
+    # place holder to bypass lint check
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         O = {}
         S = State()
+        reduce = None
         for name, layer in zip(self.names, self.layers):
+            if "reduce" == name:
+                reduce = layer
+                continue
             O[name], S[name] = layer(x, p[name], s[name])
-        if self.reduce is not None:
-            args = (v for k, v in O.items() if k.startswith("#"))
-            kwargs = {k: v for k, v in O.items() if not k.startswith("#")}
-            O = self.reduce(*args, **kwargs)
-        return O, S
+
+        if reduce is None:
+            return O, S
+        else:
+            O, S["reduce"] = reduce(O, p["reduce"], s["reduce"])
+            return O, S
 
 
 class Residual(Branch):
     def __init__(self, processor, *, skip_through=identity, reduce: Callable = jnp.add):
-        super().__init__(processor, skip_through, reduce=reduce)
+        super().__init__(
+            processor=processor,
+            skip_through=skip_through,
+            reduce=lambda x: reduce(x["processor"], x["skip_through"]),
+        )
 
 
 class Parallel(Branch):
     """N -> N"""
 
-    # place holder to bypass link check
+    # place holder to bypass lint check
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
+        reduce = None
+        if "reduce" in self.names:
+            assert len(x) == len(self.layers) - 1, (
+                "Number of inputs must match number of layers."
+            )
+            assert self.names.index("reduce") == len(self.layers) - 1, (
+                "`reduce` layer must be the last layer."
+            )
+            names = self.names[:-1]
+            layers = self.layers[:-1]
+            reduce = self.layers[-1]
+        else:
+            names = self.names
+            layers = self.layers
+            assert len(x) == len(self.layers), (
+                "Number of inputs must match number of layers."
+            )
+
         if isinstance(x, dict):
-            inputs = list(x.values())
+            inputs = [x[name] for name in names]
         elif isinstance(x, (list, tuple)):
-            inputs = list(x)
+            inputs = x
         else:
             raise ValueError("Input to Parallel must be a dict, list, or tuple.")
 
-        assert len(inputs) == len(self.layers)
-
         O = {}
         S = State()
-        for name, layer, xᵢ in zip(self.names, self.layers, inputs):
+        for name, layer, xᵢ in zip(names, layers, inputs, strict=True):
             O[name], S[name] = layer(xᵢ, p[name], s[name])
-        if self.reduce is not None:
-            args = (v for k, v in O.items() if k.startswith("#"))
-            kwargs = {k: v for k, v in O.items() if not k.startswith("#")}
-            O = self.reduce(*args, **kwargs)
-        return O, S
+
+        if reduce is None:
+            return O, S
+        else:
+            O, S["reduce"] = reduce(O, p["reduce"], s["reduce"])
+            return O, S
 
 
 #####

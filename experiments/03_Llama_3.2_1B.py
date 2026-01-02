@@ -22,7 +22,7 @@ from grain.experimental import FlatMapIterDataset, FlatMapTransform, ParquetIter
 from jax import Array
 
 from julax.base import Dtype
-from julax.core import LayerBase, Learner, Param, State, Trainer
+from julax.core import LayerBase, Learner, Param, State, Trainer, PRNG
 from julax.einops import Rearrange
 from julax.experiment import Experiment
 from julax.layers import (
@@ -222,12 +222,65 @@ def create_dataset(
     )
 
 
-def attention(qkv, timescale):
-    q, k, v = qkv.values()
-    q = apply_rotary_emb(q, timescale)
-    k = apply_rotary_emb(k, timescale)
+def attention(inputs):
+    q, k, v = inputs["hidden"].values()
+    q = apply_rotary_emb(q, inputs["timescale"])
+    k = apply_rotary_emb(k, inputs["timescale"])
     o = jax.nn.dot_product_attention(q, k, v, is_causal=True)
     return o
+
+
+class CachedAttention(LayerBase):
+    batch_size: int
+    cache_size: int
+    num_kv_heads: int
+    head_dim: int
+    dtype: Dtype = jnp.bfloat16
+
+    def state(self, rng: PRNG) -> State:
+        return State(
+            k=jnp.zeros(
+                (self.batch_size, self.cache_size, self.num_kv_heads, self.head_dim),
+                dtype=self.dtype,
+            ),
+            v=jnp.zeros(
+                (self.batch_size, self.cache_size, self.num_kv_heads, self.head_dim),
+                dtype=self.dtype,
+            ),
+            end_index=jnp.zeros(1, dtype=jnp.int32),
+        )
+
+    def state_length(self) -> int:
+        return (
+            2 * self.batch_size * self.cache_size * self.num_kv_heads * self.head_dim
+            + 1
+        )
+
+    def forward(self, inputs: dict, p: Param, s: Param) -> tuple[Array, State]:
+        q, k, v = inputs["hidden"].values()
+        seq_len = q.shape[1]
+
+        timescale = inputs["timescale"]
+        position = inputs["position"]
+
+        q = apply_rotary_emb(q, timescale, position)
+        k = apply_rotary_emb(k, timescale, position)
+
+        slice_indices = (0, s["end_index"][0], 0, 0)
+        k = jax.lax.dynamic_update_slice(s["k"], k, slice_indices)
+        v = jax.lax.dynamic_update_slice(s["v"], v, slice_indices)
+        # o = jax.nn.dot_product_attention(q, k, v, is_causal=True)
+        query_positions = jnp.arange(seq_len) + s["end_index"][0]
+        key_positions = jnp.arange(self.cache_size)
+        attention_mask = key_positions[None, :] <= query_positions[:, None]
+        o = jax.nn.dot_product_attention(q, k, v, mask=attention_mask[None, None, :, :])
+
+        S = State(
+            k=k,
+            v=v,
+            end_index=s["end_index"] + seq_len,
+        )
+        return o, S
 
 
 class Transformer(LayerBase):
@@ -242,7 +295,13 @@ class Transformer(LayerBase):
         h = x["token_ids"]
         h, S["emb"] = self.emb(h, p["emb"], s["emb"])
         h, S["blocks"] = self.blocks(
-            {"hidden": h, "timescale": s["rope"]["timescale"]}, p["blocks"], s["blocks"]
+            {
+                "hidden": h,
+                "timescale": s["rope"]["timescale"],
+                "position": x.get("position", None),
+            },
+            p["blocks"],
+            s["blocks"],
         )
         h, S["out_norm"] = self.out_norm(h["hidden"], p["out_norm"], s["out_norm"])
 
@@ -260,6 +319,7 @@ def create_transformer(
     head_dim=64,
     ffn_hidden_dim=8192,
     vocab_size=128256,
+    cache_size=None,
 ) -> Transformer:
     return Transformer(
         emb=Embedding(in_dim=vocab_size, out_dim=dim, param_dtype=jnp.bfloat16),
@@ -271,12 +331,12 @@ def create_transformer(
         out_norm=RMSNorm(dim=dim, eps=1e-05, scale_dtype=jnp.bfloat16),
         blocks=Repeat(
             n=16,
-            layer=Branch(  # {hidden(in), timescale} => {hidden(out), timescale}
+            layer=Branch(
                 hidden=Chain(
                     attn=Residual(
                         Chain(
                             Parallel(
-                                qkv=Chain(
+                                hidden=Chain(
                                     norm=RMSNorm(dim=dim, eps=1e-05),
                                     qkv_proj=Branch(
                                         q=Chain(
@@ -324,7 +384,16 @@ def create_transformer(
                                     ),
                                 ),
                                 timescale=identity,
-                                reduce=attention,
+                                position=identity,
+                                reduce=attention
+                                if cache_size is None
+                                else CachedAttention(
+                                    batch_size=batch_size,
+                                    cache_size=cache_size,
+                                    num_kv_heads=num_kv_heads,
+                                    head_dim=head_dim,
+                                    dtype=jnp.bfloat16,
+                                ),
                             ),
                             Rearrange(
                                 "B T N H -> B T (N H)",
@@ -345,14 +414,12 @@ def create_transformer(
                         Chain(
                             norm=RMSNorm(dim=dim, eps=1e-05),
                             up=Branch(
-                                # up_proj
-                                Linear(
+                                up_proj=Linear(
                                     in_dim=dim,
                                     out_dim=ffn_hidden_dim,
                                     param_dtype=jnp.bfloat16,
                                 ),
-                                # gate_proj
-                                Chain(
+                                gate_proj=Chain(
                                     proj=Linear(
                                         in_dim=dim,
                                         out_dim=ffn_hidden_dim,
@@ -360,7 +427,7 @@ def create_transformer(
                                     ),
                                     activation=jax.nn.silu,
                                 ),
-                                reduce=jnp.multiply,
+                                reduce=lambda x: x["up_proj"] * x["gate_proj"],
                             ),
                             down=Linear(
                                 in_dim=ffn_hidden_dim,
@@ -371,6 +438,7 @@ def create_transformer(
                     ),
                 ),
                 timescale=Select(key="timescale"),
+                position=Select(key="position"),
             ),
         ),
     )
@@ -406,26 +474,30 @@ def from_hf(p, s):
         w_gate.append(tensors[f"model.layers.{i}.mlp.gate_proj.weight"].T)
         w_down.append(tensors[f"model.layers.{i}.mlp.down_proj.weight"].T)
 
-    p["blocks"]["hidden"]["attn"]["#0"]["#0"]["qkv"]["norm"]["scale"] = jnp.stack(
-        w_ln1, axis=0
+    p["blocks"]["hidden"]["attn"]["processor"]["#0"]["hidden"]["norm"]["scale"] = (
+        jnp.stack(w_ln1, axis=0)
     )
-    p["blocks"]["hidden"]["attn"]["#0"]["#0"]["qkv"]["qkv_proj"]["q"]["#0"]["w"] = (
-        jnp.stack(w_q, axis=0)
-    )
-    p["blocks"]["hidden"]["attn"]["#0"]["#0"]["qkv"]["qkv_proj"]["k"]["#0"]["w"] = (
-        jnp.stack(w_k, axis=0)
-    )
-    p["blocks"]["hidden"]["attn"]["#0"]["#0"]["qkv"]["qkv_proj"]["v"]["#0"]["w"] = (
-        jnp.stack(w_v, axis=0)
-    )
-    p["blocks"]["hidden"]["attn"]["#0"]["#2"]["w"] = jnp.stack(w_o, axis=0)
+    p["blocks"]["hidden"]["attn"]["processor"]["#0"]["hidden"]["qkv_proj"]["q"]["#0"][
+        "w"
+    ] = jnp.stack(w_q, axis=0)
+    p["blocks"]["hidden"]["attn"]["processor"]["#0"]["hidden"]["qkv_proj"]["k"]["#0"][
+        "w"
+    ] = jnp.stack(w_k, axis=0)
+    p["blocks"]["hidden"]["attn"]["processor"]["#0"]["hidden"]["qkv_proj"]["v"]["#0"][
+        "w"
+    ] = jnp.stack(w_v, axis=0)
+    p["blocks"]["hidden"]["attn"]["processor"]["#2"]["w"] = jnp.stack(w_o, axis=0)
 
-    p["blocks"]["hidden"]["ffn"]["#0"]["norm"]["scale"] = jnp.stack(w_ln2, axis=0)
-    p["blocks"]["hidden"]["ffn"]["#0"]["up"]["#0"]["w"] = jnp.stack(w_up, axis=0)
-    p["blocks"]["hidden"]["ffn"]["#0"]["up"]["#1"]["proj"]["w"] = jnp.stack(
-        w_gate, axis=0
+    p["blocks"]["hidden"]["ffn"]["processor"]["norm"]["scale"] = jnp.stack(
+        w_ln2, axis=0
     )
-    p["blocks"]["hidden"]["ffn"]["#0"]["down"]["w"] = jnp.stack(w_down, axis=0)
+    p["blocks"]["hidden"]["ffn"]["processor"]["up"]["up_proj"]["w"] = jnp.stack(
+        w_up, axis=0
+    )
+    p["blocks"]["hidden"]["ffn"]["processor"]["up"]["gate_proj"]["proj"]["w"] = (
+        jnp.stack(w_gate, axis=0)
+    )
+    p["blocks"]["hidden"]["ffn"]["processor"]["down"]["w"] = jnp.stack(w_down, axis=0)
 
     p["emb"]["w"] = tensors["model.embed_tokens.weight"]
     p["out_norm"]["scale"] = tensors["model.norm.weight"]
@@ -433,13 +505,32 @@ def from_hf(p, s):
     return p, s
 
 
-def verify():
-    m = create_transformer()
-    p, s = from_hf(*m.init())
-    input_ids = jnp.array([[128000, 791, 6367, 311, 28915, 264, 1695, 19692, 374, 220]])
-    p, s = m.init()
-    o, _ = m({"token_ids": input_ids}, p, s)
-    assert o[0][0].argmax().item() == 16309
+def verify(max_seq_len=30):
+    tokens = [128000, 791, 6367, 311, 28915, 264, 1695, 19692, 374, 220]
+    input_ids = jnp.array([tokens])
+    m_prefill = create_transformer(seq_len=input_ids.shape[1], cache_size=max_seq_len)
+    m_decode = create_transformer(seq_len=1, cache_size=max_seq_len)
+    p, s = from_hf(*m_prefill.init())
+    o, s_cached = m_prefill(
+        {
+            "token_ids": input_ids,
+            "position": jnp.arange(input_ids.shape[1]).reshape(1, -1),
+        },
+        p,
+        s,
+    )
+
+    for _ in range(max_seq_len - 1 - input_ids.shape[1]):
+        new_token = int(o[0][-1].argmax())
+        position = jnp.array([[len(tokens)]])
+        tokens.append(new_token)
+
+        input_ids = jnp.array([[new_token]])
+
+        o, s_cached = m_decode(
+            {"token_ids": input_ids, "position": position}, p, s_cached
+        )
+    print("Generated tokens:", tokens)
 
 
 def create_experiment():
