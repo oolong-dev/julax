@@ -444,11 +444,15 @@ def create_transformer(
     )
 
 
-def from_hf(p, s):
+def from_hf(p, s, model_path=None):
+    # Allow overriding the default model path via argument or environment variable.
+    if model_path is None:
+        model_path = os.getenv(
+            "LLAMA_MODEL_PATH", "models/Llama-3.2-1B-Instruct/model.safetensors"
+        )
+
     tensors = {}
-    with safe_open(
-        "models/Llama-3.2-1B-Instruct/model.safetensors", framework="flax", device="cpu"
-    ) as f:
+    with safe_open(model_path, framework="flax", device="cpu") as f:
         for key in f.keys():
             tensors[key] = f.get_tensor(key)
 
