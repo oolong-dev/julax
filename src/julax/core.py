@@ -196,9 +196,11 @@ class Trainer(LayerBase):
         self, x: PyTree, p: Param, s: State
     ) -> tuple[Param, State]:
         (_, S), grads = value_and_grad(self.forward, argnums=1, has_aux=True)(x, p, s)
-        updates, S["optimizer"] = self.optimizer.update(grads, S["optimizer"])
-        P = optax.apply_updates(p, updates)
-        return P, S
+        updates, S["optimizer"] = self.optimizer.update(
+            grads["learner"], S["optimizer"]
+        )
+        P = optax.apply_updates(p["learner"], updates)
+        return {"learner": P}, S
 
     @dispatch
     def __call__(self, x: PyTree, p: Param, s: State) -> tuple[Param, State]:
