@@ -1,6 +1,6 @@
 import jax
 from julax.base import dispatch
-from julax.core import LayerBase
+from .base import LayerBase
 
 from rich.console import Console
 from rich.tree import Tree

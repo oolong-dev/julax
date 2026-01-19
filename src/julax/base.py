@@ -11,6 +11,10 @@ OutShardingType: TypeAlias = PartitionSpec | None
 # TODO: isinstance(jnp.dtype, jnp.float32) fails
 Dtype: TypeAlias = Any
 
+Param: TypeAlias = dict
+State: TypeAlias = dict
+
+
 dispatch = plum.Dispatcher(warn_redefinition=True)
 
 

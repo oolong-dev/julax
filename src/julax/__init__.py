@@ -1,6 +1,4 @@
 from .core import (
-    LayerBase,
-    LayerLike,
     Learner,
     PRNG,
     Param,
@@ -8,34 +6,44 @@ from .core import (
     State,
     Trainer,
     dispatch,
-    to_layer,
 )
-from .einops import EinMix, Rearrange, Reduce
-from .experiment import Experiment
+from .experiment.experiment import Experiment
 from .layers import (
+    Branch,
     Chain,
     Dropout,
+    EinMix,
     Embedding,
     F,
+    LayerBase,
+    LayerLike,
     LayerNorm,
     Linear,
+    NamedLayers,
+    Parallel,
+    Rearrange,
+    Reduce,
+    Repeat,
+    Residual,
+    RMSNorm,
+    RotaryEmbedding,
+    Select,
     test_mode,
+    to_layer,
     train_mode,
 )
-from .observers import (
-    ObserverBase,
+from .experiment.observers import (
     CompositeObserver,
     DoAtStep0,
     DoEveryNSteps,
     LossLogger,
+    ObserverBase,
     StepTimeLogger,
     default_observer,
 )
 
 __all__ = [
     # core
-    "LayerBase",
-    "LayerLike",
     "Learner",
     "PRNG",
     "Param",
@@ -43,28 +51,37 @@ __all__ = [
     "State",
     "Trainer",
     "dispatch",
-    "to_layer",
-    # einops
-    "EinMix",
-    "Rearrange",
-    "Reduce",
     # experiment
     "Experiment",
     # layers
+    "Branch",
     "Chain",
     "Dropout",
+    "EinMix",
     "Embedding",
     "F",
-    "Linear",
+    "LayerBase",
+    "LayerLike",
     "LayerNorm",
+    "Linear",
+    "NamedLayers",
+    "Parallel",
+    "Rearrange",
+    "Reduce",
+    "Repeat",
+    "Residual",
+    "RMSNorm",
+    "RotaryEmbedding",
+    "Select",
     "test_mode",
+    "to_layer",
     "train_mode",
     # observers
-    "ObserverBase",
     "CompositeObserver",
     "DoAtStep0",
     "DoEveryNSteps",
     "LossLogger",
+    "ObserverBase",
     "StepTimeLogger",
     "default_observer",
 ]

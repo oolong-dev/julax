@@ -1,7 +1,7 @@
 from collections import namedtuple
 import numpy as np
 
-from julax.einops import Rearrange, Reduce
+from julax.layers.einops import Rearrange, Reduce
 from einops import _backends, rearrange, reduce
 from einops.tests import FLOAT_REDUCTIONS as REDUCTIONS
 

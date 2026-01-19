@@ -7,14 +7,14 @@ import jax.numpy as jnp
 from jax.nn.initializers import Initializer
 from pydantic import computed_field
 
-from julax.base import FrozenDict
-from .core import LayerBase, Param, PyTree, State, PRNG
+from julax.base import FrozenDict, Param, PyTree, State, PRNG
+from .base import LayerBase
 
 
 class Reduce(LayerBase):
     pattern: str
     reduction: str
-    sizes: dict
+    sizes: FrozenDict
 
     def __init__(self, pattern: str, reduction: str, **kwargs):
         super().__init__(pattern=pattern, reduction=reduction, sizes=kwargs)
@@ -69,7 +69,7 @@ class EinMix(LayerBase):
     w_init: Initializer
     b_shape: str | None
     b_init: Initializer | None
-    sizes: dict
+    sizes: FrozenDict
 
     @computed_field
     @property

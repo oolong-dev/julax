@@ -23,8 +23,8 @@ from jax import Array
 
 from julax.base import Dtype
 from julax.core import LayerBase, Learner, Param, State, Trainer, PRNG
-from julax.einops import Rearrange
-from julax.experiment import Experiment
+from julax.layers.einops import Rearrange
+from julax.experiment.experiment import Experiment
 from julax.layers import (
     Branch,
     Chain,
@@ -36,7 +36,7 @@ from julax.layers import (
     RMSNorm,
     Select,
 )
-from julax.observers import default_observer
+from julax.experiment.observers import default_observer
 from julax.utils import identity
 
 

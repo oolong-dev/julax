@@ -3,17 +3,18 @@ import time
 from typing import Protocol
 
 import jax
-from .core import Param, State
+from julax.base import Param, State
+from .experiment import Experiment
 
 logger = logging.getLogger(__name__)
 
 
 class Observer(Protocol):
-    def __call__(self, x, p: Param, s: State): ...
+    def __call__(self, step: int, exp: Experiment, param: Param, state: State): ...
 
 
 class ObserverBase:
-    def __call__(self, x, p: Param, s: State):
+    def __call__(self, step: int, exp: Experiment, param: Param, state: State):
         raise NotImplementedError
 
     def __mul__(self, other: Observer) -> "CompositeObserver":
@@ -28,20 +29,18 @@ class DoEveryNSteps(ObserverBase):
         self.n = n
         self.observer = observer
 
-    def __call__(self, x, p: Param, s: State):
-        step = s["step"]
+    def __call__(self, step: int, exp: Experiment, param: Param, state: State):
         if step % self.n == 0:
-            return self.observer(x, p, s)
+            return self.observer(step, exp, param, state)
 
 
 class DoAtStep0(ObserverBase):
     def __init__(self, observer: Observer):
         self.observer = observer
 
-    def __call__(self, x, p: Param, s: State):
-        step = s["step"]
+    def __call__(self, step: int, exp: Experiment, param: Param, state: State):
         if step == 0:
-            return self.observer(x, p, s)
+            return self.observer(step, exp, param, state)
 
 
 class CompositeObserver(ObserverBase):
@@ -53,15 +52,14 @@ class CompositeObserver(ObserverBase):
             else:
                 self.observers.append(obs)
 
-    def __call__(self, x, p: Param, s: State):
+    def __call__(self, step: int, exp: Experiment, param: Param, state: State):
         for observer in self.observers:
-            observer(x, p, s)
+            observer(step, exp, param, state)
 
 
 class LossLogger(ObserverBase):
-    def __call__(self, x, p: Param, s: State):
-        loss = s["trainer"]["loss"]
-        step = s["step"]
+    def __call__(self, step: int, exp: Experiment, param: Param, state: State):
+        loss = state["trainer"]["loss"]
         jax.debug.print("Step {step}: loss={loss}", step=step, loss=loss)
 
 
@@ -71,7 +69,7 @@ class StepTimeLogger(ObserverBase):
         self.last_time = None
         self.step_count = 0
 
-    def __call__(self, x, p: Param, s: State):
+    def __call__(self, step: int, exp: Experiment, param: Param, state: State):
         if self.last_time is None:
             self.last_time = time.perf_counter()
             self.step_count = 0
@@ -82,7 +80,6 @@ class StepTimeLogger(ObserverBase):
         if self.step_count % self.n == 0:
             now = time.perf_counter()
             avg_time = (now - self.last_time) / self.step_count
-            step = s["step"]
             logger.info(
                 f"Step {step}: avg step time over last {self.step_count} steps: {avg_time:.6f}s"
             )
