@@ -2,11 +2,12 @@
 # dependencies = [
 #   "julax",
 #   "opencv-python",
+#   "tensorflow",
 #   "tensorflow-datasets>=4.9.9",
 # ]
 #
 # [tool.uv.sources]
-# julax = { path = "../", editable = true }
+# julax = { path = "../../", editable = true }
 # ///
 
 import logging
