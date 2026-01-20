@@ -18,33 +18,14 @@ class ObserverBase:
         raise NotImplementedError
 
     def __mul__(self, other: Observer) -> "CompositeObserver":
-        return CompositeObserver([self, other])
+        return CompositeObserver(self, other)
 
     def __rmul__(self, other: Observer) -> "CompositeObserver":
-        return CompositeObserver([other, self])
-
-
-class DoEveryNSteps(ObserverBase):
-    def __init__(self, observer: Observer, n: int = 1):
-        self.n = n
-        self.observer = observer
-
-    def __call__(self, step: int, exp: Experiment, param: Param, state: State):
-        if step % self.n == 0:
-            return self.observer(step, exp, param, state)
-
-
-class DoAtStep0(ObserverBase):
-    def __init__(self, observer: Observer):
-        self.observer = observer
-
-    def __call__(self, step: int, exp: Experiment, param: Param, state: State):
-        if step == 0:
-            return self.observer(step, exp, param, state)
+        return CompositeObserver(other, self)
 
 
 class CompositeObserver(ObserverBase):
-    def __init__(self, observers: list[Observer]):
+    def __init__(self, *observers: Observer):
         self.observers = []
         for obs in observers:
             if isinstance(obs, CompositeObserver):
@@ -57,13 +38,22 @@ class CompositeObserver(ObserverBase):
             observer(step, exp, param, state)
 
 
-class LossLogger(ObserverBase):
+@jax.jit
+def _get_loss(state: State) -> float:
+    return state["loss"]
+
+
+class LogLossEveryNSteps(ObserverBase):
+    def __init__(self, n: int = 100, first_n: int = 10):
+        self.n = n
+        self.first_n = first_n
+
     def __call__(self, step: int, exp: Experiment, param: Param, state: State):
-        loss = state["trainer"]["loss"]
-        jax.debug.print("Step {step}: loss={loss}", step=step, loss=loss)
+        if step > 0 and (step <= self.first_n or step % self.n == 0):
+            logger.info("Step %s: loss=%s", step, _get_loss(state))
 
 
-class StepTimeLogger(ObserverBase):
+class LogAvgStepTime(ObserverBase):
     def __init__(self, n: int = 100):
         self.n = n
         self.last_time = None
@@ -88,4 +78,4 @@ class StepTimeLogger(ObserverBase):
 
 
 def default_observer() -> CompositeObserver:
-    return DoEveryNSteps(LossLogger(), n=10) * StepTimeLogger()
+    return LogLossEveryNSteps() * LogAvgStepTime()

@@ -18,48 +18,22 @@ from jax.nn.initializers import truncated_normal
 import optax
 import tensorflow_datasets as tfds
 
-from julax import (
+from julax.layers import (
     Chain,
-    DoEveryNSteps,
-    Experiment,
     Learner,
     Linear,
-    Param,
-    State,
     Trainer,
-    default_observer,
     test_mode,
 )
+
+from julax.base import Param, State
+
+from julax.experiment import Experiment, default_observer, run
 
 from absl import logging as absl_logging
 
 logging.root.setLevel(logging.INFO)
 absl_logging.use_python_logging()
-
-
-def evaluate(x: Experiment, p: Param, s: State):
-    dataset = (
-        grain.MapDataset.source(tfds.data_source("mnist", split="test"))
-        .batch(32, drop_remainder=True)
-        .map(
-            lambda x: {
-                "feature": x["image"].reshape(32, -1),
-                "label": x["label"],
-            }
-        )
-        .to_iter_dataset()
-    )
-    model = x.trainer.learner.model
-    param = p["trainer"]["learner"]["model"]
-    state = test_mode(s["trainer"]["learner"]["model"])
-    n_correct, n_total = 0, 0
-    for batch in iter(dataset):
-        ŷ, _ = model(batch["feature"], param, state)
-        n_correct += (ŷ.argmax(axis=1) == batch["label"]).sum().item()
-        n_total += 32
-    acc = n_correct / n_total
-
-    logging.info(f"Accuracy at step {s['step']}: {acc}")
 
 
 E = Experiment(
@@ -101,8 +75,36 @@ E = Experiment(
     )
     .slice(slice(1000))
     .to_iter_dataset(),
-    observer=default_observer() * DoEveryNSteps(evaluate, n=100),
 )
 
-E.run()
-E.close()
+eval_dataset = (
+    grain.MapDataset.source(tfds.data_source("mnist", split="test"))
+    .batch(32, drop_remainder=True)
+    .map(
+        lambda x: {
+            "feature": x["image"].reshape(32, -1),
+            "label": x["label"],
+        }
+    )
+    .to_iter_dataset()
+)
+
+
+def evaluate(step: int, exp: Experiment, param: Param, state: State):
+    if step % 100 == 0:
+        model = exp.trainer.learner.model
+        param = param["learner"]["model"]
+        state = test_mode(state["learner"]["model"])
+        n_correct, n_total = 0, 0
+        for batch in iter(eval_dataset):
+            ŷ, _ = model(batch["feature"], param, state)
+            n_correct += (ŷ.argmax(axis=1) == batch["label"]).sum().item()
+            n_total += 32
+        acc = n_correct / n_total
+
+        logging.info(f"Accuracy at step {step}: {acc}")
+
+
+observer = default_observer() * evaluate
+
+run(E, observer)

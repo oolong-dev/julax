@@ -22,6 +22,8 @@ def run(exp: Experiment, observer: ObserverBase) -> tuple[int, Param, State]:
         step, param, state, input_iter = exp.restore()
         observer(step, exp, param, state)
 
+        compiled_step = None
+
         for x_local in input_iter:
             if exp.max_steps is not None and step >= exp.max_steps:
                 logger.info(f"Reached max steps {exp.max_steps}, stopping training.")
@@ -32,7 +34,11 @@ def run(exp: Experiment, observer: ObserverBase) -> tuple[int, Param, State]:
                 ),
                 local_data=x_local,
             )
-            param, state = exp.step(step, param, state, x)
+
+            if compiled_step is None:
+                compiled_step = exp.precompile(x, param, state)
+
+            param, state = compiled_step(x, param, state)
 
             step += 1
             exp.save(step, param, state, input_iter)
