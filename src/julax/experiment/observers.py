@@ -77,5 +77,32 @@ class LogAvgStepTime(ObserverBase):
             self.step_count = 0
 
 
+class ProfileAtSteps(ObserverBase):
+    def __init__(
+        self,
+        dir: str,
+        steps: list[int] | None = None,
+        span: int = 3,
+        is_rank0_only: bool = True,
+    ):
+        steps = steps or [3]
+        self.start_steps = set(x for x in steps)
+        self.stop_steps = set(x + span for x in steps)
+        self.dir = dir
+        self.is_rank0_only = is_rank0_only
+
+    def __call__(self, step: int, exp: Experiment, param: Param, state: State):
+        if self.is_rank0_only and jax.process_index() != 0:
+            return
+
+        if step in self.start_steps:
+            logger.info(f"Start profiling from step {step}...")
+            jax.profiler.start_trace(self.dir)
+        if step in self.stop_steps:
+            jax.tree.map(lambda x: x.block_until_ready(), (param, state))
+            jax.profiler.stop_trace()
+            logger.info(f"Stopped profiling at step {step}.")
+
+
 def default_observer() -> CompositeObserver:
     return LogLossEveryNSteps() * LogAvgStepTime()

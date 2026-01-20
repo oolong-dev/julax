@@ -38,9 +38,10 @@ def run(exp: Experiment, observer: ObserverBase) -> tuple[int, Param, State]:
             if compiled_step is None:
                 compiled_step = exp.precompile(x, param, state)
 
-            param, state = compiled_step(x, param, state)
+            with jax.profiler.StepTraceAnnotation("train", step_num=step):
+                param, state = compiled_step(x, param, state)
+                step += 1
 
-            step += 1
             exp.save(step, param, state, input_iter)
             observer(step, exp, param, state)
     exp.close()

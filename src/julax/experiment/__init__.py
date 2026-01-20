@@ -5,6 +5,7 @@ from .observers import (
     CompositeObserver,
     LogLossEveryNSteps,
     LogAvgStepTime,
+    ProfileAtSteps,
     default_observer,
 )
 from .run import run
@@ -16,6 +17,7 @@ __all__ = [
     "CompositeObserver",
     "LogLossEveryNSteps",
     "LogAvgStepTime",
+    "ProfileAtSteps",
     "default_observer",
     "run",
 ]

@@ -102,7 +102,7 @@ def evaluate(step: int, exp: Experiment, param: Param, state: State):
             n_total += 32
         acc = n_correct / n_total
 
-        logging.info(f"Accuracy at step {step}: {acc}")
+        logging.info(f"Accuracy at step {step}: {acc:.4f}")
 
 
 observer = default_observer() * evaluate

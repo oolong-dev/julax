@@ -15,7 +15,7 @@ import logging
 
 from pydantic import computed_field
 
-from humanize import naturalsize
+from humanize import naturalsize, metric
 
 logger = logging.getLogger(__name__)
 
@@ -53,17 +53,19 @@ class Experiment(BaseModel):
         mem = compiled.memory_analysis()
         if mem is not None:
             s_mem = [
+                "Compiled step memory analysis",
                 f"Input memory: {natural_binary_size(mem.argument_size_in_bytes)}",
                 f"Output memory: {natural_binary_size(mem.output_size_in_bytes)}",
                 f"Temp memory: {natural_binary_size(mem.temp_size_in_bytes)}",
                 f"Code memory: {natural_binary_size(mem.generated_code_size_in_bytes)}",
             ]
-            logger.info("Compiled step memory analysis: %s", "\n".join(s_mem))
+            logger.info("\n  ".join(s_mem))
         cost = compiled.cost_analysis()
         if cost is not None:
             s_cost = [
-                f"FLOPS: {natural_binary_size(cost.get('flops'))}",
-                f"The number of exp/log/sin/cos ops: {natural_binary_size(cost.get('transcendentals'))}",
+                "Compiled step cost analysis",
+                f"FLOPS: {metric(cost.get('flops'))}",
+                f"The number of exp/log/sin/cos ops: {metric(cost.get('transcendentals'))}",
                 f"The total memory traffic: {natural_binary_size(cost.get('bytes accessed'))}",
                 f"  HBM access: {natural_binary_size(cost.get('bytes accessed0{}'))}",
                 f"  L2 cache access: {natural_binary_size(cost.get('bytes accessed1{}'))}",
@@ -81,7 +83,7 @@ class Experiment(BaseModel):
                 f"  Load Balancing / Dispatch]: {cost.get('utilization8{}')}",
                 f"  Texture Units (or Rarely Used Compute Units): {cost.get('utilization9{}')}",
             ]
-            logger.info("Compiled step cost analysis: %s", "\n".join(s_cost))
+            logger.info("\n  ".join(s_cost))
         return compiled
 
     def restore(self) -> tuple[int, Param, State, grain.DatasetIterator]:
