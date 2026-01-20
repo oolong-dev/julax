@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y google-cloud-sdk google-perftools
 
 # Project dependencies
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.9.26 /uv /uvx /bin/
 
 WORKDIR /workspace/julax
 

@@ -41,7 +41,6 @@ default = true
 members = [
     "examples/01_mnist",
     "examples/02_mini_transformer",
-    ".",
 ]
 
 [dependency-groups]
