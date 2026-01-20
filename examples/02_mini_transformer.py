@@ -18,9 +18,7 @@ import numpy as np
 import optax
 from jax.nn.initializers import truncated_normal
 
-from julax.core import Learner, Trainer
-from julax.layers.einops import Rearrange
-from julax.experiment.experiment import Experiment
+from julax.experiment import Experiment
 from julax.layers import (
     Chain,
     Embedding,
@@ -30,8 +28,11 @@ from julax.layers import (
     Repeat,
     Residual,
     RotaryEmbedding,
+    Learner,
+    Trainer,
+    Rearrange,
 )
-from julax.experiment.observers import default_observer
+from julax.experiment import default_observer
 from julax.utils import identity
 
 
