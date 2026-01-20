@@ -8,6 +8,9 @@
 #
 # [tool.uv.sources]
 # julax = { path = "../../", editable = true }
+#
+# [[tool.uv.index]]
+# url = "https://pypi.org/simple"
 # ///
 
 import logging
