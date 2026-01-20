@@ -1,20 +1,4 @@
-# /// script
-# dependencies = [
-#   "julax",
-#   "opencv-python",
-#   "tensorflow",
-#   "tensorflow-datasets>=4.9.9",
-# ]
-#
-# [tool.uv.sources]
-# julax = { path = "../../", editable = true }
-#
-# [[tool.uv.index]]
-# url = "https://pypi.org/simple"
-# ///
-
 import logging
-
 
 import grain
 import jax

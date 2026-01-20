@@ -11,11 +11,21 @@ RUN curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key --keyri
 # Install the Google Cloud SDK
 RUN apt-get update && apt-get install -y google-cloud-sdk google-perftools
 
+# Project dependencies
+
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 WORKDIR /workspace/julax
+
+# Install dependencies
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-install-project
+
 COPY . /workspace/julax
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    cd examples/01_mnist && uv sync --script main.py
+    uv sync --locked
 
 CMD ["sleep", "infinity"]
