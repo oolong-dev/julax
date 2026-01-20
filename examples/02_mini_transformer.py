@@ -18,7 +18,7 @@ import numpy as np
 import optax
 from jax.nn.initializers import truncated_normal
 
-from julax.experiment import Experiment
+from julax.experiment import Experiment, run
 from julax.layers import (
     Chain,
     Embedding,
@@ -32,8 +32,14 @@ from julax.layers import (
     Trainer,
     Rearrange,
 )
-from julax.experiment import default_observer
 from julax.utils import identity
+
+
+import logging
+from absl import logging as absl_logging
+
+logging.root.setLevel(logging.INFO)
+absl_logging.use_python_logging()
 
 
 class FakeSource(grain.sources.RandomAccessDataSource):
@@ -112,8 +118,10 @@ def main(
                                                 fprop_dtype=jnp.float32,
                                             ),
                                             value=identity,
-                                            reduce=partial(
-                                                jax.nn.dot_product_attention,
+                                            reduce=lambda qkv: jax.nn.dot_product_attention(
+                                                qkv["query"],
+                                                qkv["key"],
+                                                qkv["value"],
                                                 is_causal=True,
                                             ),
                                         ),
@@ -173,10 +181,8 @@ def main(
             .slice(slice(num_steps))
             .to_iter_dataset()
         ),
-        observer=default_observer(),
     )
 
 
 x = main()
-x.run()
-x.close()
+run(x)
