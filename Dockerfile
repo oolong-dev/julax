@@ -20,6 +20,6 @@ WORKDIR /workspace/julax
 COPY . .
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked
+    cd examples/02_mini_transformer && uv sync --locked
 
 CMD ["sleep", "infinity"]

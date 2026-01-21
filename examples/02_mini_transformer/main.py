@@ -1,12 +1,3 @@
-# /// script
-# dependencies = [
-#   "julax",
-# ]
-#
-# [tool.uv.sources]
-# julax = { path = "../", editable = true }
-# ///
-
 # Reproduce https://sdbuchanan.com/blog/jax-2/
 
 from functools import partial
