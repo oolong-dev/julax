@@ -5,7 +5,12 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "julax[tpu]",
+    "julax",
+]
+
+[project.optional-dependencies]
+tpu = [
+    "jax[tpu]",
 ]
 
 [tool.uv.sources]

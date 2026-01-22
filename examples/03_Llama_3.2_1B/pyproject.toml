@@ -5,5 +5,15 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "julax",
     "safetensors>=0.7.0",
 ]
+
+[project.optional-dependencies]
+tpu = [
+    "jax[tpu]",
+]
+
+
+[tool.uv.sources]
+julax = { workspace = true }

@@ -42,6 +42,7 @@ members = [
     "examples/01_mnist",
     "examples/02_mini_transformer",
     "examples/03_Llama_3.2_1B",
+    ".",
 ]
 
 [dependency-groups]

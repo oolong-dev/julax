@@ -39,22 +39,42 @@ name = "02-mini-transformer"
 version = "0.1.0"
 source = { virtual = "examples/02_mini_transformer" }
 dependencies = [
-    { name = "julax", extra = ["tpu"] },
+    { name = "julax" },
+]
+
+[package.optional-dependencies]
+tpu = [
+    { name = "jax", extra = ["tpu"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "julax", extras = ["tpu"], editable = "." }]
+requires-dist = [
+    { name = "jax", extras = ["tpu"], marker = "extra == 'tpu'" },
+    { name = "julax", editable = "." },
+]
+provides-extras = ["tpu"]
 
 [[package]]
 name = "03-llama-3-2-1b"
 version = "0.1.0"
 source = { virtual = "examples/03_Llama_3.2_1B" }
 dependencies = [
+    { name = "julax" },
     { name = "safetensors" },
 ]
 
+[package.optional-dependencies]
+tpu = [
+    { name = "jax", extra = ["tpu"] },
+]
+
 [package.metadata]
-requires-dist = [{ name = "safetensors", specifier = ">=0.7.0" }]
+requires-dist = [
+    { name = "jax", extras = ["tpu"], marker = "extra == 'tpu'" },
+    { name = "julax", editable = "." },
+    { name = "safetensors", specifier = ">=0.7.0" },
+]
+provides-extras = ["tpu"]
 
 [[package]]
 name = "absl-py"
