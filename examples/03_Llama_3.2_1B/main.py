@@ -505,12 +505,12 @@ def from_hf(p, s, model_path=None):
     return p, s
 
 
-def verify(max_seq_len=30):
+def verify(max_seq_len=30, model_path=None):
     tokens = [128000, 791, 6367, 311, 28915, 264, 1695, 19692, 374, 220]
     input_ids = jnp.array([tokens])
     m_prefill = create_transformer(seq_len=input_ids.shape[1], cache_size=max_seq_len)
     m_decode = create_transformer(seq_len=1, cache_size=max_seq_len)
-    p, s = from_hf(*m_prefill.init())
+    p, s = from_hf(*m_prefill.init(), model_path=model_path)
     o, s_cached = m_prefill(
         {
             "token_ids": input_ids,
