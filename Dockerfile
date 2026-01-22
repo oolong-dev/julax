@@ -29,6 +29,10 @@ COPY examples/01_mnist/pyproject.toml examples/01_mnist/
 COPY examples/02_mini_transformer/pyproject.toml examples/02_mini_transformer/
 COPY examples/03_Llama_3.2_1B/pyproject.toml examples/03_Llama_3.2_1B/
 
+# Create a dummy source structure to satisfy build backend checks
+# This allows installing dependencies without copying the full source code yet
+RUN mkdir -p src/julax && touch src/julax/__init__.py
+
 # Install dependencies only (no project source)
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --all-packages --extra tpu
