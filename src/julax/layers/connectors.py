@@ -128,7 +128,12 @@ class Residual(Branch):
 
 
 class Parallel(Branch):
-    """N -> N"""
+    """N -> N
+
+    !!! WARNING
+        JAX's JIT compilation reconstructs dictionaries with sorted keys. Do not
+        rely on the order of keys in the input dictionary.
+    """
 
     # place holder to bypass lint check
     def __init__(self, *args, **kwargs):
