@@ -31,7 +31,7 @@ COPY examples/03_Llama_3.2_1B/pyproject.toml examples/03_Llama_3.2_1B/
 
 # Install dependencies only (no project source)
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --all-packages
+    uv sync --frozen --no-install-project --all-packages --extra tpu
 
 # Copy the rest of the application
 COPY . .
@@ -39,6 +39,6 @@ COPY . .
 # Install the project itself
 # This step is fast as dependencies are already installed
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --all-packages
+    uv sync --frozen --all-packages --extra tpu
 
 CMD ["sleep", "infinity"]
