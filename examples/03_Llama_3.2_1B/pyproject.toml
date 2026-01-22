@@ -1,0 +1,19 @@
+[project]
+name = "03-llama-3-2-1b"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "julax",
+    "safetensors>=0.7.0",
+]
+
+[project.optional-dependencies]
+tpu = [
+    "jax[tpu]",
+]
+
+
+[tool.uv.sources]
+julax = { workspace = true }

@@ -1,13 +1,3 @@
-# /// script
-# dependencies = [
-#   "julax",
-#   "pyarrow",
-# ]
-#
-# [tool.uv.sources]
-# julax = { path = "../", editable = true }
-# ///
-
 import os
 import pickle
 import optax
@@ -21,11 +11,12 @@ from grain._src.core.sharding import ShardByJaxProcess, even_split
 from grain.experimental import FlatMapIterDataset, FlatMapTransform, ParquetIterDataset
 from jax import Array
 
-from julax.base import Dtype
-from julax.core import LayerBase, Learner, Param, State, Trainer, PRNG
-from julax.einops import Rearrange
-from julax.experiment import Experiment
+from julax.base import Dtype, Param, State, PRNG
+from julax.experiment.experiment import Experiment
 from julax.layers import (
+    LayerBase,
+    Learner,
+    Trainer,
     Branch,
     Chain,
     Embedding,
@@ -35,8 +26,9 @@ from julax.layers import (
     Residual,
     RMSNorm,
     Select,
+    Rearrange,
 )
-from julax.observers import default_observer
+from julax.experiment.observers import default_observer
 from julax.utils import identity
 
 
@@ -223,7 +215,9 @@ def create_dataset(
 
 
 def attention(inputs):
-    q, k, v = inputs["hidden"].values()
+    q = inputs["hidden"]["q"]
+    k = inputs["hidden"]["k"]
+    v = inputs["hidden"]["v"]
     q = apply_rotary_emb(q, inputs["timescale"])
     k = apply_rotary_emb(k, inputs["timescale"])
     o = jax.nn.dot_product_attention(q, k, v, is_causal=True)
@@ -257,7 +251,9 @@ class CachedAttention(LayerBase):
         )
 
     def forward(self, inputs: dict, p: Param, s: Param) -> tuple[Array, State]:
-        q, k, v = inputs["hidden"].values()
+        q = inputs["hidden"]["q"]
+        k = inputs["hidden"]["k"]
+        v = inputs["hidden"]["v"]
         seq_len = q.shape[1]
 
         timescale = inputs["timescale"]
@@ -509,12 +505,12 @@ def from_hf(p, s, model_path=None):
     return p, s
 
 
-def verify(max_seq_len=30):
+def verify(max_seq_len=30, model_path=None):
     tokens = [128000, 791, 6367, 311, 28915, 264, 1695, 19692, 374, 220]
     input_ids = jnp.array([tokens])
     m_prefill = create_transformer(seq_len=input_ids.shape[1], cache_size=max_seq_len)
     m_decode = create_transformer(seq_len=1, cache_size=max_seq_len)
-    p, s = from_hf(*m_prefill.init())
+    p, s = from_hf(*m_prefill.init(), model_path=model_path)
     o, s_cached = m_prefill(
         {
             "token_ids": input_ids,

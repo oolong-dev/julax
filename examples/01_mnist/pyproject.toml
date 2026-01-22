@@ -1,0 +1,15 @@
+[project]
+name = "01_mnist"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "julax",
+    "opencv-python>=4.13.0.90",
+    "tensorflow>=2.20.0",
+    "tensorflow-datasets>=4.9.9",
+]
+
+[tool.uv.sources]
+julax = { workspace = true }

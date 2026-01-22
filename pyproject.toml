@@ -1,6 +1,6 @@
 [project]
 name = "julax"
-version = "0.0.5"
+version = "0.0.6"
 description = "Just Layers over JAX"
 readme = "README.md"
 authors = [
@@ -37,11 +37,18 @@ ignore = ["E741", "F811"]
 url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 default = true
 
+[tool.uv.workspace]
+members = [
+    "examples/01_mnist",
+    "examples/02_mini_transformer",
+    "examples/03_Llama_3.2_1B",
+    ".",
+]
+
 [dependency-groups]
 dev = [
-    "pyarrow>=22.0.0",
+    "ipython>=9.9.0",
     "pytest>=8.4.2",
-    "safetensors>=0.7.0",
-    "tensorflow-datasets>=4.9.9",
-    "tiktoken>=0.12.0",
+    "tensorboard>=2.20.0",
+    "xprof>=2.21.4",
 ]
