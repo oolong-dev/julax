@@ -24,7 +24,7 @@ ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
 
 # Copy dependency files first to leverage Docker cache
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md ./
 COPY examples/01_mnist/pyproject.toml examples/01_mnist/
 COPY examples/02_mini_transformer/pyproject.toml examples/02_mini_transformer/
 COPY examples/03_Llama_3.2_1B/pyproject.toml examples/03_Llama_3.2_1B/
