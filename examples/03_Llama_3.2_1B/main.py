@@ -308,7 +308,6 @@ class Transformer(LayerBase):
 
 def create_transformer(
     batch_size=1,
-    seq_len=10,
     dim=2048,
     num_q_heads=32,
     num_kv_heads=8,
@@ -344,7 +343,6 @@ def create_transformer(
                                             Rearrange(
                                                 "B T (N H) -> B T N H",
                                                 B=batch_size,
-                                                T=seq_len,
                                                 N=num_q_heads,
                                                 H=head_dim,
                                             ),
@@ -358,7 +356,6 @@ def create_transformer(
                                             Rearrange(
                                                 "B S (K H) -> B S K H",
                                                 B=batch_size,
-                                                S=seq_len,
                                                 K=num_kv_heads,
                                                 H=head_dim,
                                             ),
@@ -372,7 +369,6 @@ def create_transformer(
                                             Rearrange(
                                                 "B S (K H) -> B S K H",
                                                 B=batch_size,
-                                                S=seq_len,
                                                 K=num_kv_heads,
                                                 H=head_dim,
                                             ),
@@ -394,7 +390,6 @@ def create_transformer(
                             Rearrange(
                                 "B T N H -> B T (N H)",
                                 B=batch_size,
-                                T=seq_len,
                                 N=num_q_heads,
                                 H=head_dim,
                             ),
@@ -508,10 +503,9 @@ def from_hf(p, s, model_path=None):
 def verify(max_seq_len=30, model_path=None):
     tokens = [128000, 791, 6367, 311, 28915, 264, 1695, 19692, 374, 220]
     input_ids = jnp.array([tokens])
-    m_prefill = create_transformer(seq_len=input_ids.shape[1], cache_size=max_seq_len)
-    m_decode = create_transformer(seq_len=1, cache_size=max_seq_len)
-    p, s = from_hf(*m_prefill.init(), model_path=model_path)
-    o, s_cached = m_prefill(
+    m = create_transformer(cache_size=max_seq_len)
+    p, s = from_hf(*m.init(), model_path=model_path)
+    o, s_cached = m(
         {
             "token_ids": input_ids,
             "position": jnp.arange(input_ids.shape[1]).reshape(1, -1),
@@ -527,9 +521,7 @@ def verify(max_seq_len=30, model_path=None):
 
         input_ids = jnp.array([[new_token]])
 
-        o, s_cached = m_decode(
-            {"token_ids": input_ids, "position": position}, p, s_cached
-        )
+        o, s_cached = m({"token_ids": input_ids, "position": position}, p, s_cached)
     print("Generated tokens:", tokens)
 
 
