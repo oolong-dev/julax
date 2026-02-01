@@ -1,0 +1,49 @@
+import optax
+
+from julax.experiment.experiment import Experiment
+from julax.layers import (
+    Learner,
+    Trainer,
+)
+from .model import create_model
+from .dataset import create_dataset
+
+
+def create_experiment():
+    return Experiment(
+        name="llama_3.2_1b",
+        max_steps=1000,
+        trainer=Trainer(
+            learner=Learner(
+                feature_name="inputs",
+                label_name="target_labels",
+                model=create_model(),
+                loss_fn=optax.softmax_cross_entropy_with_integer_labels,
+            ),
+            optimizer=optax.chain(
+                optax.clip_by_global_norm(1.0),
+                optax.scale_by_adam(
+                    b1=0.9,
+                    b2=0.95,
+                    eps=1e-8,
+                ),
+                optax.add_decayed_weights(0.1),
+                optax.scale_by_schedule(
+                    optax.warmup_cosine_decay_schedule(
+                        init_value=0.0,
+                        peak_value=0.0005,
+                        warmup_steps=2_000,
+                        decay_steps=30_000,
+                        end_value=5.0e-05,
+                    )
+                ),
+                optax.scale(-1.0),
+            ),
+        ),
+        dataset=create_dataset(
+            batch_size=4,
+            seq_len=4096,
+            data_dir="data/wikipedia_parquet",
+            tokenizer_dir="models/llama_tokenizer.pkl",
+        ),
+    )

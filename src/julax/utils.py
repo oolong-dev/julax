@@ -2,6 +2,7 @@ import math
 import jax
 from jax.sharding import Mesh
 from jax.experimental import mesh_utils
+from jax._src.mesh import thread_resources
 
 
 def identity(x):
@@ -17,3 +18,11 @@ def create_mesh(mesh_shape: dict[str, int]) -> Mesh:
 
     devices = mesh_utils.create_device_mesh(values, jax.devices())
     return Mesh(devices, list(mesh_shape.keys()))
+
+
+def get_mesh() -> Mesh:
+    mesh = thread_resources.env.physical_mesh
+    if mesh.empty:
+        raise ValueError("Expected to be initialized within the context of a mesh.")
+
+    return mesh

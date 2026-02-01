@@ -57,6 +57,7 @@ coverage.xml
 # Project specific (from .gitignore)
 tmp/
 **/models/
+**/data/
 checkpoints/
 
 # Documentation

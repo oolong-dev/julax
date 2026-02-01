@@ -1,18 +1,19 @@
 [project]
-name = "03-llama-3-2-1b"
+name = "03-llama-3"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "jsonargparse>=4.45.0",
     "julax",
     "safetensors>=0.7.0",
+    "tokenizers>=0.22.2",
+    "transformers>=5.0.0",
 ]
 
 [project.optional-dependencies]
-tpu = [
-    "jax[tpu]",
-]
+tpu = ["jax[tpu]"]
 
 
 [tool.uv.sources]
