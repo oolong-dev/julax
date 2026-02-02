@@ -5,6 +5,7 @@ FROM ${BASEIMAGE}
 # Combined apt-get commands for layer optimization and cleanup
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    git \
     gnupg \
     google-perftools \
     ca-certificates \
@@ -35,7 +36,7 @@ RUN mkdir -p src/julax && touch src/julax/__init__.py
 
 # Install dependencies only (no project source)
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --all-packages --extra tpu
+    uv sync --frozen --no-install-project --all-packages --all-extras
 
 # Copy the rest of the application
 COPY . .
@@ -43,6 +44,6 @@ COPY . .
 # Install the project itself
 # This step is fast as dependencies are already installed
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --all-packages --extra tpu
+    uv sync --frozen --all-packages --all-extras
 
 CMD ["sleep", "infinity"]

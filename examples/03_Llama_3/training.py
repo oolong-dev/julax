@@ -51,5 +51,5 @@ def create_experiment(data_dir: str, tokenizer_dir: str):
 
 
 if __name__ == "__main__":
-    exp = auto_cli(create_experiment)
+    exp = auto_cli(create_experiment, as_positional=False)
     exp.run()
