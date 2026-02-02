@@ -50,7 +50,7 @@ class Trainer(LayerBase):
     ) -> tuple[Param, State]:
         (_, S), grads = value_and_grad(self.forward, argnums=1, has_aux=True)(x, p, s)
         updates, S["optimizer"] = self.optimizer.update(
-            grads["learner"], S["optimizer"]
+            grads["learner"], S["optimizer"], p["learner"]
         )
         P = optax.apply_updates(p["learner"], updates)
         return {"learner": P}, S
