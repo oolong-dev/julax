@@ -39,7 +39,9 @@ class _TextDatasetIterator(DatasetIterator):
         batch = self._token_buffer[: B * T + 1]
         self._token_buffer = self._token_buffer[B * T :]
         return {
-            "inputs": np.array(batch[:-1]).reshape(B, T),
+            "inputs": {
+                "token_ids": np.array(batch[:-1]).reshape(B, T),
+            },
             "target_labels": np.array(batch[1:]).reshape(B, T),
         }
 
