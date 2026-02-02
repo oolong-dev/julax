@@ -28,7 +28,7 @@ class Trainer(LayerBase):
     optimizer: Any
 
     def state(self, rng: PRNG) -> State:
-        return State(optimizer=None, loss=0.0)
+        return State(optimizer=None, loss=jnp.zeros((), dtype=jnp.bfloat16))
 
     @dispatch
     def init(

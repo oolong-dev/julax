@@ -28,6 +28,7 @@ build-backend = "hatchling.build"
 [project.optional-dependencies]
 tpu = [
     "jax[tpu]>=0.7.2",
+    "tpu-info>=0.8.1",
 ]
 
 [tool.ruff.lint]
