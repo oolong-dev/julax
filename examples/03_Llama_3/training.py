@@ -1,6 +1,6 @@
 import optax
 
-from julax.experiment.experiment import Experiment
+from julax.experiment import Experiment, run
 from julax.layers import (
     Learner,
     Trainer,
@@ -52,4 +52,4 @@ def create_experiment(data_dir: str, tokenizer_dir: str):
 
 if __name__ == "__main__":
     exp = auto_cli(create_experiment, as_positional=False)
-    exp.run()
+    run(exp)
