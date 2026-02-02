@@ -7,6 +7,10 @@ from .experiment import Experiment
 
 
 import logging
+from absl import logging as absl_logging
+
+logging.root.setLevel(logging.INFO)
+absl_logging.use_python_logging()
 
 logger = logging.getLogger(__name__)
 
