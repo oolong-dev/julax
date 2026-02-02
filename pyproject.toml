@@ -1,6 +1,6 @@
 [project]
 name = "julax"
-version = "0.0.6"
+version = "0.0.7"
 description = "Just Layers over JAX"
 readme = "README.md"
 authors = [
