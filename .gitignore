@@ -1,5 +1,6 @@
 tmp/
 models/
+data/
 checkpoints/
 
 *.bin

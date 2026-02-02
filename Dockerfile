@@ -5,6 +5,7 @@ FROM ${BASEIMAGE}
 # Combined apt-get commands for layer optimization and cleanup
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    git \
     gnupg \
     google-perftools \
     ca-certificates \
@@ -27,7 +28,7 @@ ENV UV_LINK_MODE=copy
 COPY pyproject.toml uv.lock README.md ./
 COPY examples/01_mnist/pyproject.toml examples/01_mnist/
 COPY examples/02_mini_transformer/pyproject.toml examples/02_mini_transformer/
-COPY examples/03_Llama_3.2_1B/pyproject.toml examples/03_Llama_3.2_1B/
+COPY examples/03_Llama_3/pyproject.toml examples/03_Llama_3/
 
 # Create a dummy source structure to satisfy build backend checks
 # This allows installing dependencies without copying the full source code yet
@@ -35,7 +36,7 @@ RUN mkdir -p src/julax && touch src/julax/__init__.py
 
 # Install dependencies only (no project source)
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --all-packages --extra tpu
+    uv sync --frozen --no-install-project --all-packages --all-extras
 
 # Copy the rest of the application
 COPY . .
@@ -43,6 +44,6 @@ COPY . .
 # Install the project itself
 # This step is fast as dependencies are already installed
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --all-packages --extra tpu
+    uv sync --frozen --all-packages --all-extras
 
 CMD ["sleep", "infinity"]

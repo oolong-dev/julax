@@ -1,6 +1,6 @@
 [project]
 name = "julax"
-version = "0.0.6"
+version = "0.0.7"
 description = "Just Layers over JAX"
 readme = "README.md"
 authors = [
@@ -28,6 +28,7 @@ build-backend = "hatchling.build"
 [project.optional-dependencies]
 tpu = [
     "jax[tpu]>=0.7.2",
+    "tpu-info>=0.8.1",
 ]
 
 [tool.ruff.lint]
@@ -41,7 +42,7 @@ default = true
 members = [
     "examples/01_mnist",
     "examples/02_mini_transformer",
-    "examples/03_Llama_3.2_1B",
+    "examples/03_Llama_3",
     ".",
 ]
 
