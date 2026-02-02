@@ -5,11 +5,12 @@ from julax.layers import (
     Learner,
     Trainer,
 )
-from .model import create_model
-from .dataset import create_dataset
+from model import create_model
+from dataset import create_dataset
+from jsonargparse import auto_cli
 
 
-def create_experiment():
+def create_experiment(data_dir: str, tokenizer_dir: str):
     return Experiment(
         name="llama_3.2_1b",
         max_steps=1000,
@@ -31,10 +32,10 @@ def create_experiment():
                 optax.scale_by_schedule(
                     optax.warmup_cosine_decay_schedule(
                         init_value=0.0,
-                        peak_value=0.0005,
+                        peak_value=3e-4,
                         warmup_steps=2_000,
                         decay_steps=30_000,
-                        end_value=5.0e-05,
+                        end_value=3e-5,
                     )
                 ),
                 optax.scale(-1.0),
@@ -43,7 +44,12 @@ def create_experiment():
         dataset=create_dataset(
             batch_size=4,
             seq_len=4096,
-            data_dir="data/wikipedia_parquet",
-            tokenizer_dir="models/llama_tokenizer.pkl",
+            data_dir=data_dir,
+            tokenizer_dir=tokenizer_dir,
         ),
     )
+
+
+if __name__ == "__main__":
+    exp = auto_cli(create_experiment)
+    exp.run()

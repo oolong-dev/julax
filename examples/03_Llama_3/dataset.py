@@ -1,7 +1,6 @@
 import os
 import grain
-import jax.numpy as jnp
-
+import numpy as np
 
 import json
 import gzip
@@ -40,8 +39,8 @@ class _TextDatasetIterator(DatasetIterator):
         batch = self._token_buffer[: B * T + 1]
         self._token_buffer = self._token_buffer[B * T :]
         return {
-            "inputs": jnp.array(batch[:-1]).reshape(B, T),
-            "target_labels": jnp.array(batch[1:]).reshape(B, T),
+            "inputs": np.array(batch[:-1]).reshape(B, T),
+            "target_labels": np.array(batch[1:]).reshape(B, T),
         }
 
     def get_state(self) -> dict:
