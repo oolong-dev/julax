@@ -9,6 +9,12 @@ from model import create_model
 from dataset import create_dataset
 from jsonargparse import auto_cli
 
+import logging
+from absl import logging as absl_logging
+
+logging.root.setLevel(logging.INFO)
+absl_logging.use_python_logging()
+
 
 def create_experiment(data_dir: str, tokenizer_dir: str):
     return Experiment(
