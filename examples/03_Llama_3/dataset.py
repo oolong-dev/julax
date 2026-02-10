@@ -12,7 +12,7 @@ grain.sources.ArrayRecordDataSource
 
 
 class JsonlDatasetIterator(DatasetIterator):
-    def __init__(self, file_path: str):
+    def __init__(self, file_path: Path):
         super().__init__()
         self._file_path = file_path
         self._file = None
@@ -21,7 +21,7 @@ class JsonlDatasetIterator(DatasetIterator):
     def _seek(self, line: int = 0):
         if self._file:
             self._file.close()
-        self._file = gzip.open(self._file_path, "rt", encoding="utf-8")
+        self._file = gzip.open(self._file_path.open(), "rt", encoding="utf-8")
         for _ in range(line):
             next(self._file)
         return self._file
@@ -46,7 +46,7 @@ class JsonlDatasetIterator(DatasetIterator):
 
 
 class JsonlIterDataset(IterDataset):
-    def __init__(self, file_path: str):
+    def __init__(self, file_path: Path):
         super().__init__()
         self._file_path = file_path
 
@@ -92,15 +92,12 @@ class VanillaBatchIterator(DatasetIterator):
 
 
 class VanillaIterDataset(IterDataset):
-    def __init__(self, file_path, tokenizer_dir, batch_size, seq_len):
+    def __init__(self, file_path: Path, tokenizer_dir, batch_size, seq_len):
         super().__init__()
-        self._file_path = file_path
         self._tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir)
         self._batch_size = batch_size
         self._seq_len = seq_len
-        self._ds = JsonlIterDataset(self._file_path).map(
-            lambda x: self._tokenizer.encode(x)
-        )
+        self._ds = JsonlIterDataset(file_path).map(lambda x: self._tokenizer.encode(x))
 
     def __iter__(self) -> DatasetIterator:
         return VanillaBatchIterator(iter(self._ds), self._batch_size, self._seq_len)

@@ -49,7 +49,7 @@ def create_experiment(data_dir: str, tokenizer_dir: str):
         ),
         dataset=create_dataset(
             batch_size=4,
-            seq_len=4096,
+            seq_len=8192,
             data_dir=data_dir,
             tokenizer_dir=tokenizer_dir,
         ),
