@@ -60,6 +60,7 @@ version = "0.1.0"
 source = { virtual = "examples/03_Llama_3" }
 dependencies = [
     { name = "etils" },
+    { name = "gcsfs" },
     { name = "jsonargparse" },
     { name = "julax" },
     { name = "safetensors" },
@@ -75,6 +76,7 @@ tpu = [
 [package.metadata]
 requires-dist = [
     { name = "etils", specifier = ">=1.13.0" },
+    { name = "gcsfs", specifier = ">=2026.1.0" },
     { name = "jax", extras = ["tpu"], marker = "extra == 'tpu'" },
     { name = "jsonargparse", specifier = ">=4.45.0" },
     { name = "julax", editable = "." },
@@ -1325,7 +1327,7 @@ wheels = [
 
 [[package]]
 name = "julax"
-version = "0.0.7"
+version = "0.0.8"
 source = { editable = "." }
 dependencies = [
     { name = "einops" },
