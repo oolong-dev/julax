@@ -1,4 +1,3 @@
-import os
 import grain
 import numpy as np
 
@@ -7,96 +6,124 @@ import gzip
 from transformers import AutoTokenizer
 from grain._src.core.sharding import ShardByJaxProcess, even_split
 from grain import IterDataset, DatasetIterator
+from etils.epath import Path
+
+grain.sources.ArrayRecordDataSource
 
 
-class _TextDatasetIterator(DatasetIterator):
-    def __init__(self, file_path: str, tokenizer, batch_size: int, seq_len: int):
+class JsonlDatasetIterator(DatasetIterator):
+    def __init__(self, file_path: str):
         super().__init__()
         self._file_path = file_path
-        self._tokenizer = tokenizer
+        self._file = None
+        self._line = 0
+
+    def _seek(self, line: int = 0):
+        if self._file:
+            self._file.close()
+        self._file = gzip.open(self._file_path, "rt", encoding="utf-8")
+        for _ in range(line):
+            next(self._file)
+        return self._file
+
+    def __next__(self):
+        line = next(self._file or self._seek())
+        data = json.loads(line)
+        text = data["text"]
+        self._line += 1
+        return text
+
+    def get_state(self) -> dict:
+        return {"line": self._line}
+
+    def set_state(self, state: dict):
+        self._line = state["line"]
+        self._seek(self._line)
+
+    def close(self) -> None:
+        if self._file:
+            self._file.close()
+
+
+class JsonlIterDataset(IterDataset):
+    def __init__(self, file_path: str):
+        super().__init__()
+        self._file_path = file_path
+
+    def __iter__(self):
+        return JsonlDatasetIterator(self._file_path)
+
+
+class VanillaBatchIterator(DatasetIterator):
+    def __init__(self, ds_iter: DatasetIterator, batch_size: int, seq_len: int):
+        super().__init__()
+        self._inner_iter = iter(ds_iter)
         self._batch_size = batch_size
         self._seq_len = seq_len
 
-        self._line = 0
         self._token_buffer = []
-        self._file = self._seek_line(file_path, self._line)
-
-    def _seek_line(self, file_path: str, line: int):
-        file = gzip.open(file_path, "rt", encoding="utf-8")
-        for _ in range(line):
-            next(file)
-        return file
 
     def __next__(self):
         B, T = self._batch_size, self._seq_len
         while len(self._token_buffer) <= B * T:
-            line = next(self._file)
-            data = json.loads(line)
-            text = data["text"]
-            tokens = self._tokenizer.encode(text)
+            tokens = next(self._inner_iter)
             self._token_buffer.extend(tokens)
-            self._line += 1
-        batch = self._token_buffer[: B * T + 1]
+        batch = np.array(self._token_buffer[: B * T + 1])
         self._token_buffer = self._token_buffer[B * T :]
         return {
             "inputs": {
-                "token_ids": np.array(batch[:-1]).reshape(B, T),
+                "token_ids": batch[:-1].reshape(B, T),
             },
-            "target_labels": np.array(batch[1:]).reshape(B, T),
+            "target_labels": batch[1:].reshape(B, T),
         }
 
     def get_state(self) -> dict:
         return {
-            "line": self._line,
+            "inner_iter": self._inner_iter.get_state(),
             "token_buffer": self._token_buffer,
         }
 
     def set_state(self, state: dict):
-        if hasattr(self, "_file") and self._file:
-            self._file.close()
-        self._line = state["line"]
+        self._inner_iter.set_state(state["inner_iter"])
         self._token_buffer = state["token_buffer"]
-        self._file = self._seek_line(self._file_path, self._line)
-        self.start_prefetch()
 
     def close(self) -> None:
-        if hasattr(self, "_file") and self._file:
-            self._file.close()
+        self._inner_iter.close()
 
 
-class TextIterDataset(IterDataset):
-    def __init__(
-        self, file_path: str, tokenizer_dir: str, batch_size: int, seq_len: int
-    ):
+class VanillaIterDataset(IterDataset):
+    def __init__(self, file_path, tokenizer_dir, batch_size, seq_len):
         super().__init__()
         self._file_path = file_path
         self._tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir)
         self._batch_size = batch_size
         self._seq_len = seq_len
-
-    def __iter__(self):
-        return _TextDatasetIterator(
-            self._file_path, self._tokenizer, self._batch_size, self._seq_len
+        self._ds = JsonlIterDataset(self._file_path).map(
+            lambda x: self._tokenizer.encode(x)
         )
+
+    def __iter__(self) -> DatasetIterator:
+        return VanillaBatchIterator(iter(self._ds), self._batch_size, self._seq_len)
 
 
 def create_dataset(
     batch_size: int,
     seq_len: int,
-    data_dir: str,
     tokenizer_dir: str,
+    data_dir: str,
+    split_pattern: str = "c4-train.*",
     seed: int = 2026,
     n_open_files: int = 4,
     n_prefetch_per_file: int = 4,
 ) -> IterDataset:
-    files = sorted([os.path.join(data_dir, f) for f in os.listdir(data_dir)])
+    files = [p for p in Path(data_dir).iterdir() if p.match(split_pattern)]
 
     ds = grain.experimental.InterleaveIterDataset(
         grain.MapDataset.source(files)
         .shuffle(seed=seed)
         .slice(slice(*even_split(len(files), ShardByJaxProcess(drop_remainder=True))))
         .map(
-            lambda file_path: TextIterDataset(
+            lambda file_path: VanillaIterDataset(
                 file_path, tokenizer_dir, batch_size, seq_len
             )
         ),  # pyright: ignore[reportArgumentType]
