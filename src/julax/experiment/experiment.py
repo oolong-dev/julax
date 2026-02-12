@@ -90,11 +90,13 @@ class Experiment(BaseModel):
         p, s = self.trainer.init(self.seed)
         i = iter(self.dataset)
         if self.checkpoint_manager is None:
+            i.start_prefetch()
             return 0, p, s, i
 
         step = self.checkpoint_manager.latest_step()
 
         if step is None:
+            i.start_prefetch()
             return 0, p, s, i
 
         restored = self.checkpoint_manager.restore(
@@ -111,6 +113,7 @@ class Experiment(BaseModel):
                 input=grain.checkpoint.CheckpointRestore(item=i),
             ),
         )
+        restored["input"].start_prefetch()
         return step, restored["param"], restored["state"], restored["input"]
 
     def save(self, step: int, p: Param, s: State, i: grain.DatasetIterator):
