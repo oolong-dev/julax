@@ -23,6 +23,7 @@ WORKDIR /workspace/julax
 # Enable bytecode compilation and copying for uv
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
+ENV PATH="/workspace/julax/.venv/bin:$PATH"
 
 # Copy dependency files first to leverage Docker cache
 COPY pyproject.toml uv.lock README.md ./
