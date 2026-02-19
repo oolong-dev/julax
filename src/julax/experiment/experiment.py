@@ -1,7 +1,5 @@
-from functools import cached_property, partial
-from jax.sharding import Mesh
+from functools import partial
 
-from julax.utils import create_mesh
 from pydantic import BaseModel, ConfigDict
 
 from julax.base import PyTree, State, Param
@@ -13,7 +11,6 @@ import orbax.checkpoint as ocp
 
 import logging
 
-from pydantic import computed_field
 
 from humanize import naturalsize, metric
 
@@ -34,21 +31,16 @@ class Experiment(BaseModel):
 
     max_steps: int | None = None
     batch_axis_names: list[str] = ["data"]
-    mesh_shape: dict[str, int] = {"data": -1}
 
     checkpoint_manager: ocp.CheckpointManager | None = None
 
-    @computed_field
-    @cached_property
-    def mesh(self) -> Mesh:
-        return create_mesh(self.mesh_shape)
-
-    def step(self, x: PyTree, p: Param, s: State) -> tuple[Param, State]:
-        return self.trainer(x, p, s)
-
     # TODO: AOT compile
     def precompile(self, x: PyTree, p: Param, s: State):
-        traced = self.trainer.forward_and_backward.trace(self.trainer, x, p, s)
+        if isinstance(self.trainer, Trainer):
+            step_fn = self.trainer
+        else:
+            step_fn = self.trainer()
+        traced = step_fn.forward_and_backward.trace(step_fn, x, p, s)
         compiled = traced.lower().compile()
         mem = compiled.memory_analysis()
         if mem is not None:
@@ -130,3 +122,9 @@ class Experiment(BaseModel):
     def close(self):
         if self.checkpoint_manager:
             self.checkpoint_manager.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()

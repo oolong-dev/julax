@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+from julax import get_mesh
 from julax.base import Array, Dtype, Param, State, PRNG
 from julax.layers import (
     LayerBase,
@@ -15,11 +16,14 @@ from julax.layers import (
     Rearrange,
 )
 from julax.utils import identity
+from functools import partial
+
+from jax.sharding import PartitionSpec as P
 
 from jax.experimental.pallas.ops.tpu.splash_attention import (
     CausalMask,
     MultiHeadMask,
-    make_splash_mha_single_device,
+    make_splash_mha,
     BlockSizes,
 )
 
@@ -181,12 +185,52 @@ def make_splash_attention_fn(
     mask = MultiHeadMask(
         tuple(CausalMask(shape=(seq_len, seq_len)) for _ in range(num_q_heads))
     )
-    kernel = make_splash_mha_single_device(
+
+    BLOCK_SIZE = 128
+    if seq_len % 128 != 0 or BLOCK_SIZE % 128 != 0:
+        # splash attention kernel requires block size to be a multiple of 128
+        raise NotImplementedError("Splash block size needs to be a multiple of 128")
+
+    block_sizes = BlockSizes(
+        block_q=BLOCK_SIZE,
+        block_kv=BLOCK_SIZE,
+        block_kv_compute=BLOCK_SIZE,
+        block_q_dkv=BLOCK_SIZE,
+        block_kv_dkv=BLOCK_SIZE,
+        block_kv_dkv_compute=BLOCK_SIZE,
+        block_q_dq=BLOCK_SIZE,
+        block_kv_dq=BLOCK_SIZE,
+    )
+
+    kernel = make_splash_mha(
         mask,
-        block_sizes=block_sizes,
         head_shards=1,
         q_seq_shards=1,
+        block_sizes=block_sizes,
     )
+
+    mesh = get_mesh()
+    splash_spec = P("data", None)
+    splash_sharding = jax.sharding.NamedSharding(mesh, splash_spec)
+
+    kernel_spec = kernel.manual_sharding_spec(splash_sharding)
+
+    @partial(
+        jax.shard_map,
+        mesh=mesh,
+        in_specs=(
+            kernel_spec,
+            splash_spec,
+            splash_spec,
+            splash_spec,
+        ),
+        out_specs=splash_spec,
+    )
+    def sharded_kernel(kernel, q, k, v):
+        res = kernel(q, k, v)
+        if isinstance(res, tuple):
+            return res[0]
+        return res
 
     def splash_attention(inputs):
         q = inputs["hidden"]["q"]  # [B, N_q, T, H]
@@ -196,11 +240,7 @@ def make_splash_attention_fn(
         k = apply_rotary_emb(k, inputs["timescale"])
         # Splash kernel does NOT scale internally; apply 1/√(head_dim).
         q = q * (q.shape[-1] ** -0.5)
-        # Layout is already [B, N, T, H]; splash expects [N, T, H] — vmap over batch.
-        result = jax.vmap(kernel)(q, k, v)
-        # The kernel returns (output, residuals) when save_residuals=True,
-        # or just the output array otherwise.  Handle both for safety.
-        o = result[0] if isinstance(result, tuple) else result  # [B, N_q, T, H]
+        o = sharded_kernel(kernel, q, k, v)
         return o
 
     return splash_attention
