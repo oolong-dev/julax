@@ -1,6 +1,7 @@
 import grain
 import numpy as np
 
+import io
 import json
 import gzip
 from transformers import AutoTokenizer
@@ -14,12 +15,15 @@ class JsonlDatasetIterator(DatasetIterator):
         super().__init__()
         self._file_path = file_path
         self._file = None
+        self._raw_ctx = None
         self._line = 0
 
     def _seek(self, line: int = 0):
-        if self._file:
-            self._file.close()
-        self._file = gzip.open(self._file_path.open("rb"), mode="rt", encoding="utf-8")
+        self.close()
+        # epath.Path.open() returns a context manager, so we must __enter__ it
+        self._raw_ctx = self._file_path.open("rb")
+        raw_file = self._raw_ctx.__enter__()
+        self._file = io.TextIOWrapper(gzip.GzipFile(fileobj=raw_file), encoding="utf-8")
         for _ in range(line):
             next(self._file)
         return self._file
@@ -41,6 +45,10 @@ class JsonlDatasetIterator(DatasetIterator):
     def close(self) -> None:
         if self._file:
             self._file.close()
+            self._file = None
+        if self._raw_ctx:
+            self._raw_ctx.__exit__(None, None, None)
+            self._raw_ctx = None
 
 
 class JsonlIterDataset(IterDataset):

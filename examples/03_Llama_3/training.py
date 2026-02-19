@@ -21,6 +21,7 @@ absl_logging.use_python_logging()
 def main(
     data_dir: str = "./debug/data/",
     tokenizer_dir: str = "./debug/tokenizer",
+    profile_dir: str = "/output/profiles",
     flavor: str = "debug",
     attention_backend="default",
     mesh_shape: dict[str, int] = {"data": -1},
@@ -74,6 +75,7 @@ def main(
                     ),
                 )
             case "llama_3.2_1b":
+                seq_len = 8192
                 x = Experiment(
                     name="llama_3.2_1b",
                     max_steps=1000,
@@ -81,7 +83,11 @@ def main(
                         learner=Learner(
                             feature_name="inputs",
                             label_name="target_labels",
-                            model=create_model(),
+                            model=create_model(
+                                "llama_3.2_1b",
+                                attention_backend=attention_backend,
+                                seq_len=seq_len,
+                            ),
                             loss_fn=optax.softmax_cross_entropy_with_integer_labels,
                         ),
                         optimizer=optax.chain(
@@ -106,7 +112,7 @@ def main(
                     ),
                     dataset=create_dataset(
                         batch_size=4,
-                        seq_len=8192,
+                        seq_len=seq_len,
                         data_dir=data_dir,
                         tokenizer_dir=tokenizer_dir,
                     ),
@@ -116,7 +122,7 @@ def main(
         with x:
             run(
                 x,
-                default_observer() * ProfileAtSteps(dir="/output/profiles", steps=[3]),
+                default_observer() * ProfileAtSteps(dir=profile_dir, steps=[3]),
             )
 
 

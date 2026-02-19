@@ -404,6 +404,7 @@ def create_model(
         out_norm=RMSNorm(dim=dim, eps=1e-05, scale_dtype=jnp.bfloat16),
         blocks=Repeat(
             n=n_layers,
+            remat=is_training,
             layer=Branch(
                 hidden=Chain(
                     attn=Residual(

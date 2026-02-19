@@ -40,6 +40,7 @@ class Select(LayerBase):
 class Repeat(LayerBase):
     n: int
     layer: LayerLike
+    remat: bool = False
 
     def sublayers(self) -> dict:
         return {f"#{i}": self.layer for i in range(self.n)}
@@ -61,7 +62,8 @@ class Repeat(LayerBase):
         def scan_forward(x, ps):
             return self.layer(x, *ps)
 
-        o, s = jax.lax.scan(scan_forward, x, (p, s))
+        fn = jax.checkpoint(scan_forward) if self.remat else scan_forward
+        o, s = jax.lax.scan(fn, x, (p, s))
 
         return o, s
 
