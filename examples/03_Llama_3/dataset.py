@@ -21,7 +21,9 @@ class JsonlDatasetIterator(DatasetIterator):
     def _seek(self, line: int = 0):
         if self._file:
             self._file.close()
-        self._file = gzip.open(self._file_path.open("rb"), "rt", encoding="utf-8")
+        self._file = self._file_path.open("rb")
+        if self._file_path.suffix == ".gz":
+            self._file = gzip.open(self._file, "rt", encoding="utf-8")
         for _ in range(line):
             next(self._file)
         return self._file

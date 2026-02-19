@@ -74,7 +74,7 @@ def main(
     model_path="models/Llama-3.2-1B-Instruct/",
 ):
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    model = AutoModelForCausalLM.from_pretrained("models/Llama-3.2-1B-Instruct/")
+    model = AutoModelForCausalLM.from_pretrained(model_path)
 
     tokens = tokenizer.encode(prompt)
     input_ids = jnp.array([tokens])
