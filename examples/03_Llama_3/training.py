@@ -1,7 +1,7 @@
 import optax
 
 from julax import create_mesh
-from julax.experiment import Experiment, run
+from julax.experiment import Experiment, run, default_observer, ProfileAtSteps
 from julax.layers import (
     Learner,
     Trainer,
@@ -68,7 +68,7 @@ def main(
                         seq_len=seq_len,
                         data_dir=data_dir,
                         tokenizer_dir=tokenizer_dir,
-                        split_pattern="*.jsonl",
+                        split_pattern="*.json.gz",
                         n_open_files=1,
                         n_prefetch_per_file=1,
                     ),
@@ -114,7 +114,10 @@ def main(
             case _:
                 raise ValueError(f"Unknown model: {flavor}")
         with x:
-            run(x)
+            run(
+                x,
+                default_observer() * ProfileAtSteps(dir="/output/profiles", steps=[3]),
+            )
 
 
 if __name__ == "__main__":

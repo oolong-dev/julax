@@ -8,8 +8,6 @@ from grain._src.core.sharding import ShardByJaxProcess, even_split
 from grain import IterDataset, DatasetIterator
 from etils.epath import Path
 
-grain.sources.ArrayRecordDataSource
-
 
 class JsonlDatasetIterator(DatasetIterator):
     def __init__(self, file_path: Path):
@@ -21,9 +19,7 @@ class JsonlDatasetIterator(DatasetIterator):
     def _seek(self, line: int = 0):
         if self._file:
             self._file.close()
-        self._file = self._file_path.open("rb")
-        if self._file_path.suffix == ".gz":
-            self._file = gzip.open(self._file, "rt", encoding="utf-8")
+        self._file = gzip.open(self._file_path.open("rb"), mode="rt", encoding="utf-8")
         for _ in range(line):
             next(self._file)
         return self._file
