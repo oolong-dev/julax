@@ -211,9 +211,10 @@ def make_splash_attention_fn(
 
     mesh = get_mesh()
     splash_spec = P("data", None)
-    splash_sharding = jax.sharding.NamedSharding(mesh, splash_spec)
 
-    kernel_spec = kernel.manual_sharding_spec(splash_sharding)
+    # The kernel (mask) should be replicated across data parallelism devices
+    replicated_sharding = jax.sharding.NamedSharding(mesh, P(None, None))
+    kernel_spec = kernel.manual_sharding_spec(replicated_sharding)
 
     @partial(
         jax.shard_map,
@@ -225,12 +226,16 @@ def make_splash_attention_fn(
             splash_spec,
         ),
         out_specs=splash_spec,
+        check_vma=False,
     )
     def sharded_kernel(kernel, q, k, v):
-        res = kernel(q, k, v)
-        if isinstance(res, tuple):
-            return res[0]
-        return res
+        def _apply_kernel(q, k, v):
+            res = kernel(q, k, v)
+            if isinstance(res, tuple):
+                return res[0]
+            return res
+
+        return jax.vmap(_apply_kernel)(q, k, v)
 
     def splash_attention(inputs):
         q = inputs["hidden"]["q"]  # [B, N_q, T, H]
