@@ -5,6 +5,8 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "etils>=1.13.0",
+    "gcsfs>=2026.1.0",
     "jsonargparse>=4.45.0",
     "julax",
     "safetensors>=0.7.0",

@@ -6,6 +6,7 @@ FROM ${BASEIMAGE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
+    vim \
     gnupg \
     google-perftools \
     ca-certificates \

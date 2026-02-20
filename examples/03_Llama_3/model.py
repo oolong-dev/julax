@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+from julax import get_mesh
 from julax.base import Array, Dtype, Param, State, PRNG
 from julax.layers import (
     LayerBase,
@@ -15,6 +16,16 @@ from julax.layers import (
     Rearrange,
 )
 from julax.utils import identity
+from functools import partial
+
+from jax.sharding import PartitionSpec as P
+
+from jax.experimental.pallas.ops.tpu.splash_attention import (
+    CausalMask,
+    MultiHeadMask,
+    make_splash_mha,
+    BlockSizes,
+)
 
 
 # Adapted from:
@@ -31,25 +42,25 @@ def apply_rotary_emb(
 
     Args:
         inputs: The input sequence on which to apply the Rotary position
-            embedding. It is assumed of shape [B, S, N, H].
+            embedding. It is assumed of shape [B, N, S, H] (heads-first).
         position: Optional position array [B, S]. Only needed when the sequence
             is packed.
 
     Returns:
-        A jax.Array of shape [B, S, N, H] with rotary position embeddings applied.
+        A jax.Array of shape [B, N, S, H] with rotary position embeddings applied.
     """
     # Ensure input is 4D
     if len(inputs.shape) != 4:
         raise ValueError(
-            "Input is assumed to be a rank 4 tensor of shape [B, S, N, H]."
+            "Input is assumed to be a rank 4 tensor of shape [B, N, S, H]."
         )
     # Determine positions if not provided
     if position is None:
-        seq_length = inputs.shape[1]
+        seq_length = inputs.shape[2]
         position = jnp.arange(seq_length, dtype=jnp.float32)[jnp.newaxis, :]
 
-    # Calculate sinusoidal input
-    position = position[:, :, jnp.newaxis, jnp.newaxis]
+    # Calculate sinusoidal input: position [B, S] -> [B, 1, S, 1]
+    position = position[:, jnp.newaxis, :, jnp.newaxis]
     sinusoid_inp = position / timescale
 
     sin = jnp.sin(sinusoid_inp)
@@ -129,13 +140,116 @@ class LLaMARotaryEmbedding(LayerBase):
 
 
 def attention(inputs):
-    q = inputs["hidden"]["q"]
-    k = inputs["hidden"]["k"]
-    v = inputs["hidden"]["v"]
+    q = inputs["hidden"]["q"]  # [B, N_q, T, H]
+    k = inputs["hidden"]["k"]  # [B, N_kv, T, H]
+    v = inputs["hidden"]["v"]  # [B, N_kv, T, H]
     q = apply_rotary_emb(q, inputs["timescale"])
     k = apply_rotary_emb(k, inputs["timescale"])
+    # dot_product_attention expects [B, T, N, H]
+    q = jnp.transpose(q, (0, 2, 1, 3))
+    k = jnp.transpose(k, (0, 2, 1, 3))
+    v = jnp.transpose(v, (0, 2, 1, 3))
     o = jax.nn.dot_product_attention(q, k, v, is_causal=True)
-    return o
+    return jnp.transpose(o, (0, 2, 1, 3))  # -> [B, N_q, T, H]
+
+
+def make_splash_attention_fn(
+    seq_len: int,
+    num_q_heads: int,
+    num_kv_heads: int,
+    block_sizes: "BlockSizes | None" = None,
+):
+    """Create a splash-attention function for a fixed sequence length.
+
+    Splash Attention is a Pallas TPU kernel that fuses the full attention
+    computation (Q·K^T scaling, masking, softmax, V matmul) into a single
+    kernel with tiled VMEM access, yielding significant speedups on TPU.
+
+    Because the kernel is compiled for a *fixed* mask shape, ``seq_len``
+    must be known at model-construction time and be divisible by the block
+    size (default 128).
+
+    Args:
+        seq_len: Sequence length (must be divisible by 128).
+        num_q_heads: Number of query heads.
+        num_kv_heads: Number of key/value heads (GQA is handled natively).
+        block_sizes: Optional :class:`BlockSizes` for tile-size tuning.
+
+    Returns:
+        A callable with the same ``inputs`` dict signature as
+        :func:`attention`, suitable as a ``reduce`` argument in
+        :class:`Parallel`.
+    """
+    # Build a causal mask per Q-head.  For GQA the kernel automatically
+    # maps Q-heads to KV-heads when num_q_heads > num_kv_heads.
+    mask = MultiHeadMask(
+        tuple(CausalMask(shape=(seq_len, seq_len)) for _ in range(num_q_heads))
+    )
+
+    BLOCK_SIZE = 128
+    if seq_len % 128 != 0 or BLOCK_SIZE % 128 != 0:
+        # splash attention kernel requires block size to be a multiple of 128
+        raise NotImplementedError("Splash block size needs to be a multiple of 128")
+
+    if block_sizes is None:
+        block_sizes = BlockSizes(
+            block_q=BLOCK_SIZE,
+            block_kv=BLOCK_SIZE,
+            block_kv_compute=BLOCK_SIZE,
+            block_q_dkv=BLOCK_SIZE,
+            block_kv_dkv=BLOCK_SIZE,
+            block_kv_dkv_compute=BLOCK_SIZE,
+            block_q_dq=BLOCK_SIZE,
+            block_kv_dq=BLOCK_SIZE,
+        )
+
+    kernel = make_splash_mha(
+        mask,
+        head_shards=1,
+        q_seq_shards=1,
+        block_sizes=block_sizes,
+    )
+
+    mesh = get_mesh()
+    splash_spec = P("data", None)
+
+    # The kernel (mask) should be replicated across data parallelism devices
+    replicated_sharding = jax.sharding.NamedSharding(mesh, P(None, None))
+    kernel_spec = kernel.manual_sharding_spec(replicated_sharding)
+
+    @partial(
+        jax.shard_map,
+        mesh=mesh,
+        in_specs=(
+            kernel_spec,
+            splash_spec,
+            splash_spec,
+            splash_spec,
+        ),
+        out_specs=splash_spec,
+        check_vma=False,
+    )
+    def sharded_kernel(kernel, q, k, v):
+        def _apply_kernel(q, k, v):
+            res = kernel(q, k, v)
+            if isinstance(res, tuple):
+                return res[0]
+            return res
+
+        return jax.vmap(_apply_kernel)(q, k, v)
+
+    def splash_attention(inputs):
+        q = inputs["hidden"]["q"]  # [B, N_q, T, H]
+        k = inputs["hidden"]["k"]  # [B, N_kv, T, H]
+        v = inputs["hidden"]["v"]  # [B, N_kv, T, H]
+        q = apply_rotary_emb(q, inputs["timescale"])
+        k = apply_rotary_emb(k, inputs["timescale"])
+        # Splash kernel does NOT scale internally; apply 1/√(head_dim).
+        q = q * (q.shape[-1] ** -0.5)
+        o = sharded_kernel(kernel, q, k, v)
+        return o
+
+    return splash_attention
 
 
 class CachedAttention(LayerBase):
@@ -148,11 +262,11 @@ class CachedAttention(LayerBase):
     def state(self, rng: PRNG) -> State:
         return State(
             k=jnp.zeros(
-                (self.batch_size, self.cache_size, self.num_kv_heads, self.head_dim),
+                (self.batch_size, self.num_kv_heads, self.cache_size, self.head_dim),
                 dtype=self.dtype,
             ),
             v=jnp.zeros(
-                (self.batch_size, self.cache_size, self.num_kv_heads, self.head_dim),
+                (self.batch_size, self.num_kv_heads, self.cache_size, self.head_dim),
                 dtype=self.dtype,
             ),
             end_index=jnp.zeros(1, dtype=jnp.int32),
@@ -165,10 +279,10 @@ class CachedAttention(LayerBase):
         )
 
     def forward(self, inputs: dict, p: Param, s: Param) -> tuple[Array, State]:
-        q = inputs["hidden"]["q"]
-        k = inputs["hidden"]["k"]
-        v = inputs["hidden"]["v"]
-        seq_len = q.shape[1]
+        q = inputs["hidden"]["q"]  # [B, N_q, T, H]
+        k = inputs["hidden"]["k"]  # [B, N_kv, T, H]
+        v = inputs["hidden"]["v"]  # [B, N_kv, T, H]
+        seq_len = q.shape[2]  # T is axis 2
 
         timescale = inputs["timescale"]
         position = inputs["position"]
@@ -176,14 +290,22 @@ class CachedAttention(LayerBase):
         q = apply_rotary_emb(q, timescale, position)
         k = apply_rotary_emb(k, timescale, position)
 
-        slice_indices = (0, s["end_index"][0], 0, 0)
+        # Cache layout: [B, N_kv, cache_size, H]
+        slice_indices = (0, 0, s["end_index"][0], 0)
         k = jax.lax.dynamic_update_slice(s["k"], k, slice_indices)
         v = jax.lax.dynamic_update_slice(s["v"], v, slice_indices)
-        # o = jax.nn.dot_product_attention(q, k, v, is_causal=True)
+
         query_positions = jnp.arange(seq_len) + s["end_index"][0]
         key_positions = jnp.arange(self.cache_size)
         attention_mask = key_positions[None, :] <= query_positions[:, None]
-        o = jax.nn.dot_product_attention(q, k, v, mask=attention_mask[None, None, :, :])
+        # dot_product_attention expects [B, T, N, H]
+        q_t = jnp.transpose(q, (0, 2, 1, 3))
+        k_t = jnp.transpose(k, (0, 2, 1, 3))
+        v_t = jnp.transpose(v, (0, 2, 1, 3))
+        o = jax.nn.dot_product_attention(
+            q_t, k_t, v_t, mask=attention_mask[None, None, :, :]
+        )
+        o = jnp.transpose(o, (0, 2, 1, 3))  # -> [B, N_q, T, H]
 
         S = State(
             k=k,
@@ -221,12 +343,47 @@ class Transformer(LayerBase):
 
 
 def create_model(
-    model="llama_3.2_1b", is_training: bool = True, cache_size=None, batch_size=1
+    model="llama_3.2_1b",
+    is_training: bool = True,
+    cache_size=None,
+    batch_size=1,
+    seq_len: int | None = None,
+    attention_backend: str = "default",
 ):
+    """Create a LLaMA model.
+
+    Args:
+        model: Model variant name.
+        is_training: Whether the model is used for training.
+        cache_size: KV-cache length for inference (required when
+            ``is_training=False``).
+        batch_size: Batch size (used for KV-cache allocation).
+        seq_len: Fixed sequence length.  **Required** when
+            ``attention_backend="splash"``.
+        attention_backend: ``"default"`` for
+            :func:`jax.nn.dot_product_attention`, or ``"splash"`` for
+            TPU-optimised Splash Attention.
+    """
     if is_training is False:
         assert cache_size is not None, "cache_size must be provided for inference."
 
+    if attention_backend == "splash":
+        assert seq_len is not None, (
+            "seq_len must be provided when using splash attention."
+        )
+        assert seq_len % 128 == 0, (
+            f"seq_len must be divisible by 128 for splash attention, got {seq_len}."
+        )
+
     match model:
+        case "debug":
+            dim = 2048
+            num_q_heads = 32
+            num_kv_heads = 8
+            head_dim = 64
+            ffn_hidden_dim = 8192
+            vocab_size = 128256
+            n_layers = 4
         case "llama_3.2_1b":
             dim = 2048
             num_q_heads = 32
@@ -234,120 +391,129 @@ def create_model(
             head_dim = 64
             ffn_hidden_dim = 8192
             vocab_size = 128256
-
-            return Transformer(
-                emb=Embedding(in_dim=vocab_size, out_dim=dim, param_dtype=jnp.bfloat16),
-                rope=LLaMARotaryEmbedding(
-                    embedding_dims=head_dim,
-                    min_timescale=1,
-                    max_timescale=500_000,
-                ),
-                out_norm=RMSNorm(dim=dim, eps=1e-05, scale_dtype=jnp.bfloat16),
-                blocks=Repeat(
-                    n=16,
-                    layer=Branch(
-                        hidden=Chain(
-                            attn=Residual(
-                                Chain(
-                                    Parallel(
-                                        hidden=Chain(
-                                            norm=RMSNorm(dim=dim, eps=1e-05),
-                                            qkv_proj=Branch(
-                                                q=Chain(
-                                                    Linear(
-                                                        in_dim=dim,
-                                                        out_dim=num_q_heads * head_dim,
-                                                        param_dtype=jnp.bfloat16,
-                                                    ),
-                                                    Rearrange(
-                                                        "B T (N H) -> B T N H",
-                                                        N=num_q_heads,
-                                                        H=head_dim,
-                                                    ),
-                                                ),
-                                                k=Chain(
-                                                    Linear(
-                                                        in_dim=dim,
-                                                        out_dim=num_kv_heads * head_dim,
-                                                        param_dtype=jnp.bfloat16,
-                                                    ),
-                                                    Rearrange(
-                                                        "B S (K H) -> B S K H",
-                                                        K=num_kv_heads,
-                                                        H=head_dim,
-                                                    ),
-                                                ),
-                                                v=Chain(
-                                                    Linear(
-                                                        in_dim=dim,
-                                                        out_dim=num_kv_heads * head_dim,
-                                                        param_dtype=jnp.bfloat16,
-                                                    ),
-                                                    Rearrange(
-                                                        "B S (K H) -> B S K H",
-                                                        K=num_kv_heads,
-                                                        H=head_dim,
-                                                    ),
-                                                ),
-                                            ),
-                                        ),
-                                        timescale=identity,
-                                        position=identity,
-                                        reduce=attention
-                                        if cache_size is None
-                                        else CachedAttention(
-                                            batch_size=batch_size,
-                                            cache_size=cache_size,
-                                            num_kv_heads=num_kv_heads,
-                                            head_dim=head_dim,
-                                            dtype=jnp.bfloat16,
-                                        ),
-                                    ),
-                                    Rearrange(
-                                        "B T N H -> B T (N H)",
-                                        N=num_q_heads,
-                                        H=head_dim,
-                                    ),
-                                    Linear(
-                                        in_dim=dim,
-                                        out_dim=dim,
-                                        param_dtype=jnp.bfloat16,
-                                    ),
-                                ),
-                                skip_through=Select(key="hidden"),
-                            ),
-                            ffn=Residual(
-                                Chain(
-                                    norm=RMSNorm(dim=dim, eps=1e-05),
-                                    up=Branch(
-                                        up_proj=Linear(
-                                            in_dim=dim,
-                                            out_dim=ffn_hidden_dim,
-                                            param_dtype=jnp.bfloat16,
-                                        ),
-                                        gate_proj=Chain(
-                                            proj=Linear(
-                                                in_dim=dim,
-                                                out_dim=ffn_hidden_dim,
-                                                param_dtype=jnp.bfloat16,
-                                            ),
-                                            activation=jax.nn.silu,
-                                        ),
-                                        reduce=lambda x: x["up_proj"] * x["gate_proj"],
-                                    ),
-                                    down=Linear(
-                                        in_dim=ffn_hidden_dim,
-                                        out_dim=dim,
-                                        param_dtype=jnp.bfloat16,
-                                    ),
-                                )
-                            ),
-                        ),
-                        timescale=Select(key="timescale"),
-                        position=Select(key="position"),
-                    ),
-                ),
-            )
-
+            n_layers = 16
         case _:
             raise ValueError(f"Unknown model: {model}")
+
+    return Transformer(
+        emb=Embedding(in_dim=vocab_size, out_dim=dim, param_dtype=jnp.bfloat16),
+        rope=LLaMARotaryEmbedding(
+            embedding_dims=head_dim,
+            min_timescale=1,
+            max_timescale=500_000,
+        ),
+        out_norm=RMSNorm(dim=dim, eps=1e-05, scale_dtype=jnp.bfloat16),
+        blocks=Repeat(
+            n=n_layers,
+            remat=is_training,
+            layer=Branch(
+                hidden=Chain(
+                    attn=Residual(
+                        Chain(
+                            Parallel(
+                                hidden=Chain(
+                                    norm=RMSNorm(dim=dim, eps=1e-05),
+                                    qkv_proj=Branch(
+                                        q=Chain(
+                                            Linear(
+                                                in_dim=dim,
+                                                out_dim=num_q_heads * head_dim,
+                                                param_dtype=jnp.bfloat16,
+                                            ),
+                                            Rearrange(
+                                                "B T (N H) -> B N T H",
+                                                N=num_q_heads,
+                                                H=head_dim,
+                                            ),
+                                        ),
+                                        k=Chain(
+                                            Linear(
+                                                in_dim=dim,
+                                                out_dim=num_kv_heads * head_dim,
+                                                param_dtype=jnp.bfloat16,
+                                            ),
+                                            Rearrange(
+                                                "B S (K H) -> B K S H",
+                                                K=num_kv_heads,
+                                                H=head_dim,
+                                            ),
+                                        ),
+                                        v=Chain(
+                                            Linear(
+                                                in_dim=dim,
+                                                out_dim=num_kv_heads * head_dim,
+                                                param_dtype=jnp.bfloat16,
+                                            ),
+                                            Rearrange(
+                                                "B S (K H) -> B K S H",
+                                                K=num_kv_heads,
+                                                H=head_dim,
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                                timescale=identity,
+                                position=identity,
+                                reduce=(
+                                    CachedAttention(
+                                        batch_size=batch_size,
+                                        cache_size=cache_size,
+                                        num_kv_heads=num_kv_heads,
+                                        head_dim=head_dim,
+                                        dtype=jnp.bfloat16,
+                                    )
+                                    if cache_size is not None
+                                    else make_splash_attention_fn(
+                                        seq_len=seq_len,  # type: ignore[arg-type]  # validated above
+                                        num_q_heads=num_q_heads,
+                                        num_kv_heads=num_kv_heads,
+                                    )
+                                    if attention_backend == "splash"
+                                    else attention
+                                ),
+                            ),
+                            Rearrange(
+                                "B N T H -> B T (N H)",
+                                N=num_q_heads,
+                                H=head_dim,
+                            ),
+                            Linear(
+                                in_dim=dim,
+                                out_dim=dim,
+                                param_dtype=jnp.bfloat16,
+                            ),
+                        ),
+                        skip_through=Select(key="hidden"),
+                    ),
+                    ffn=Residual(
+                        Chain(
+                            norm=RMSNorm(dim=dim, eps=1e-05),
+                            up=Branch(
+                                up_proj=Linear(
+                                    in_dim=dim,
+                                    out_dim=ffn_hidden_dim,
+                                    param_dtype=jnp.bfloat16,
+                                ),
+                                gate_proj=Chain(
+                                    proj=Linear(
+                                        in_dim=dim,
+                                        out_dim=ffn_hidden_dim,
+                                        param_dtype=jnp.bfloat16,
+                                    ),
+                                    activation=jax.nn.silu,
+                                ),
+                                reduce=lambda x: x["up_proj"] * x["gate_proj"],
+                            ),
+                            down=Linear(
+                                in_dim=ffn_hidden_dim,
+                                out_dim=dim,
+                                param_dtype=jnp.bfloat16,
+                            ),
+                        )
+                    ),
+                ),
+                timescale=Select(key="timescale"),
+                position=Select(key="position"),
+            ),
+        ),
+    )

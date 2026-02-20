@@ -10,7 +10,7 @@ import optax
 class Learner(LayerBase):
     loss_fn: Callable[[PyTree, PyTree], Any]
     model: LayerBase
-    agg: Callable = jnp.mean
+    agg: Callable = partial(jnp.mean, dtype=jnp.float32)
     feature_name: str = "feature"
     label_name: str = "label"
 
@@ -28,7 +28,7 @@ class Trainer(LayerBase):
     optimizer: Any
 
     def state(self, rng: PRNG) -> State:
-        return State(optimizer=None, loss=jnp.zeros((), dtype=jnp.bfloat16))
+        return State(optimizer=None, loss=jnp.zeros((), dtype=jnp.float32))
 
     @dispatch
     def init(

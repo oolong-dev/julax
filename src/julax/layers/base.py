@@ -118,7 +118,7 @@ class LayerBase(BaseModel, ABC):
     @abstractmethod
     def forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]: ...
 
-    @partial(jit, static_argnums=0, donate_argnames=("p", "s"))
+    @partial(jit, static_argnums=0)
     def jit_forward(self, x: PyTree, p: Param, s: State) -> tuple[PyTree, State]:
         return self.forward(x, p, s)
 

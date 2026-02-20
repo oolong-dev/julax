@@ -2,6 +2,7 @@ tmp/
 models/
 data/
 checkpoints/
+!examples/03_Llama_3/debug/data/
 
 *.bin
 *.pkl
