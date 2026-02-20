@@ -119,7 +119,7 @@ def create_dataset(
     n_open_files: int = 4,
     n_prefetch_per_file: int = 4,
 ) -> IterDataset:
-    files = [p for p in Path(data_dir).iterdir() if p.match(split_pattern)]
+    files = sorted([p for p in Path(data_dir).iterdir() if p.match(split_pattern)])
 
     ds = grain.experimental.InterleaveIterDataset(
         grain.MapDataset.source(files)
