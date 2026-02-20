@@ -16,7 +16,7 @@ from julax.layers import (
     Rearrange,
 )
 from julax.utils import identity
-from functools import partial
+from functools import lru_cache, partial
 
 from jax.sharding import PartitionSpec as P
 
@@ -210,35 +210,43 @@ def make_splash_attention_fn(
         block_sizes=block_sizes,
     )
 
-    mesh = get_mesh()
-    splash_spec = P("data", None)
+    # Build the sharded kernel lazily and cache it per mesh so that
+    # create_model can be called before a physical mesh is active (e.g.,
+    # during parameter initialisation or AOT precompilation), while still
+    # avoiding repeated construction on every forward call.
+    @lru_cache(maxsize=1)
+    def _build_sharded_kernel(mesh):
+        splash_spec = P("data", None)
+        replicated_sharding = jax.sharding.NamedSharding(mesh, P(None, None))
+        kernel_spec = kernel.manual_sharding_spec(replicated_sharding)
 
-    # The kernel (mask) should be replicated across data parallelism devices
-    replicated_sharding = jax.sharding.NamedSharding(mesh, P(None, None))
-    kernel_spec = kernel.manual_sharding_spec(replicated_sharding)
+        @partial(
+            jax.shard_map,
+            mesh=mesh,
+            in_specs=(
+                kernel_spec,
+                splash_spec,
+                splash_spec,
+                splash_spec,
+            ),
+            out_specs=splash_spec,
+            check_vma=False,
+        )
+        def sharded_kernel(kernel, q, k, v):
+            def _apply_kernel(q, k, v):
+                res = kernel(q, k, v)
+                if isinstance(res, tuple):
+                    return res[0]
+                return res
 
-    @partial(
-        jax.shard_map,
-        mesh=mesh,
-        in_specs=(
-            kernel_spec,
-            splash_spec,
-            splash_spec,
-            splash_spec,
-        ),
-        out_specs=splash_spec,
-        check_vma=False,
-    )
-    def sharded_kernel(kernel, q, k, v):
-        def _apply_kernel(q, k, v):
-            res = kernel(q, k, v)
-            if isinstance(res, tuple):
-                return res[0]
-            return res
+            return jax.vmap(_apply_kernel)(q, k, v)
 
-        return jax.vmap(_apply_kernel)(q, k, v)
+        return sharded_kernel
 
     def splash_attention(inputs):
+        # Resolve the mesh at forward-pass (or JIT-trace) time, then retrieve
+        # the cached sharded kernel for that mesh.
+        sharded_kernel = _build_sharded_kernel(get_mesh())
         q = inputs["hidden"]["q"]  # [B, N_q, T, H]
         k = inputs["hidden"]["k"]  # [B, N_kv, T, H]
         v = inputs["hidden"]["v"]  # [B, N_kv, T, H]
