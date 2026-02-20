@@ -191,16 +191,17 @@ def make_splash_attention_fn(
         # splash attention kernel requires block size to be a multiple of 128
         raise NotImplementedError("Splash block size needs to be a multiple of 128")
 
-    block_sizes = BlockSizes(
-        block_q=BLOCK_SIZE,
-        block_kv=BLOCK_SIZE,
-        block_kv_compute=BLOCK_SIZE,
-        block_q_dkv=BLOCK_SIZE,
-        block_kv_dkv=BLOCK_SIZE,
-        block_kv_dkv_compute=BLOCK_SIZE,
-        block_q_dq=BLOCK_SIZE,
-        block_kv_dq=BLOCK_SIZE,
-    )
+    if block_sizes is None:
+        block_sizes = BlockSizes(
+            block_q=BLOCK_SIZE,
+            block_kv=BLOCK_SIZE,
+            block_kv_compute=BLOCK_SIZE,
+            block_q_dkv=BLOCK_SIZE,
+            block_kv_dkv=BLOCK_SIZE,
+            block_kv_dkv_compute=BLOCK_SIZE,
+            block_q_dq=BLOCK_SIZE,
+            block_kv_dq=BLOCK_SIZE,
+        )
 
     kernel = make_splash_mha(
         mask,
