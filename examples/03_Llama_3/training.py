@@ -21,7 +21,7 @@ absl_logging.use_python_logging()
 def main(
     data_dir: str = "./debug/data/",
     tokenizer_dir: str = "./debug/tokenizer",
-    profile_dir: str = "/output/profiles",
+    profile_dir: str | None = None,
     flavor: str = "debug",
     attention_backend="default",
     mesh_shape: dict[str, int] = {"data": -1},
@@ -120,10 +120,10 @@ def main(
             case _:
                 raise ValueError(f"Unknown model: {flavor}")
         with x:
-            run(
-                x,
-                default_observer() * ProfileAtSteps(dir=profile_dir, steps=[3]),
-            )
+            observer = default_observer()
+            if profile_dir is not None:
+                observer *= ProfileAtSteps(dir=profile_dir, steps=[3])
+            run(x, observer)
 
 
 if __name__ == "__main__":
